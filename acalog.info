@@ -1,0 +1,6 @@
+name = Acalog Course Catalog 
+description = Provides access to course data contained in an Acalog course catalog.
+core = 7.x
+package = "Acalog"
+
+

@@ -1,0 +1,1271 @@
+<?php
+define("ACALOG_API_URL", "http://XXXXXXXX.apis.acalog.com");
+define("ACALOG_API_KEY", "XXXXXXX");
+define("ACALOG_ONLY_SHOW_ACTIVE_CATALOGS", 1);
+define("ACALOG_PROGRAM_BATCH_SPLIT", 12);
+define("ACALOG_COURSE_BATCH_SPLIT", 30);
+define("ACALOG_OPERATIONS_PER_CRON", 4);
+
+
+
+/**
+ * Implementation of hook_menu()
+ */
+function acalog_menu(){
+  $items = array();
+  $items['admin/config/system/acalog'] = array(
+    'title' => 'Acalog Course Catalog Settings',
+    'description' => 'Set acalog catalog settings.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('acalog_settings_form'),
+    'access callback' => 'user_access',
+    'access arguments' => array('administer acalog catalog'),
+  );
+
+  $items['courses-panel-pane/%'] = array(
+    'title' => 'Edit',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('acalog_course_panels_pane_edit', 1),
+    'access callback' => 'acalog_course_panels_pane_edit_access',
+    'access arguments' => array(1),
+    'file' => 'plugins/content_types/acalog_pane.inc'
+  );
+
+  $items['courses-panel-pane/%/edit'] = array(
+    'title' => 'Edit',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('acalog_course_panels_pane_edit', 1),
+    'access callback' => 'acalog_course_panels_pane_edit_access',
+    'access arguments' => array(1),
+    'file' => 'plugins/content_types/acalog_pane.inc',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'context' => MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE
+  );
+ 
+  return $items;
+}
+
+/**
+ * Menu permissions function for editing a course panel panel (OG aware)
+ */
+function acalog_course_panels_pane_edit_access($pid){
+  static $access = array();
+  if (!isset($access[$pid])){
+    $access[$pid] = FALSE; //false until proven true.
+    if ($pane = acalog_load_course_panels_pane($pid)){
+      $query = db_select('panelizer_entity', 'pe')->fields('pe', array('entity_type', 'entity_id'))->condition('pe.did', $pane->did, '=');
+      if ($result = $query->execute()->fetch()){
+        $pages = entity_load($result->entity_type, array($result->entity_id));
+        if (!empty($pages)){
+          if ($result->entity_type == "node"){
+            $node = array_pop($pages);
+            $access[$pid] = node_access("update", $node);
+          }
+        }
+      }
+    }
+  }
+  return $access[$pid];
+}
+
+/**
+ * Implements hook_permission()
+ */
+function acalog_permission(){
+  return array(
+    'administer acalog catalog' => array(
+      'title' => t('Administer Acalog catalog settings'),
+      'description' => t('Allows the management of Acalog catalog settings.'),
+    ),
+  );
+}
+
+function acalog_admin_paths_alter(&$paths){
+  $paths['courses-panel-pane/*'] = TRUE;
+}
+
+/**
+ * The acalog catalog module setting form
+ */
+function acalog_settings_form(){
+  $catalogs = variable_get('acalog_catalogs', array());
+  
+  if (empty($catalogs)){
+    $catalogs = acalog_fetch_all_catalogs();
+  }
+
+  $form = array();
+ 
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  if ($active_catalog){
+    $form['acalog_data_refresh'] = array(
+      '#type' => "fieldset",
+      '#description' => t('Refresh all updated programs and courses in the %cat_name catalog.', array('%cat_name' => $catalogs[$active_catalog]))
+    );
+    $form['acalog_data_refresh']['acalog_data_batch_refresh'] = array(
+        '#type' => 'submit',
+        '#value' => t('Acalog Catalog Data Refresh'),
+        '#submit' => array('acalog_data_batch_refresh_submit'),
+    );
+    $acalog_programs = variable_get('acalog_programs', array());
+    if (!empty($acalog_programs[$active_catalog])){
+
+      
+      $form['acalog_program_data_refresh'] = array(
+        '#type' => "fieldset",
+        '#description' => t('Refresh all programs and course data for a selected program in the %cat_name catalog.', array('%cat_name' => $catalogs[$active_catalog]))
+      );
+      $options = array(0 => "- none selected -") + $acalog_programs[$active_catalog];
+      $form['acalog_program_data_refresh']['acalog_program_data_refresh_select'] = array(
+        '#type' => "select",
+        '#title' => "Academic Program",
+        '#default_value' => (isset($conf['acalog_program'])) ? $conf['acalog_program'] : 0,
+        '#options' => $options,
+        '#description' => t('Please select an academic program to update.')
+      );
+      $form['acalog_program_data_refresh']['acalog_program_data_batch_refresh'] = array(
+          '#type' => 'submit',
+          '#value' => t('Acalog Program Data Refresh'),
+          '#submit' => array('acalog_program_data_batch_refresh_submit'),
+      );
+    }
+  }
+  
+  $form['acalog_last_active_catalog'] = array(
+    '#type' => "value",
+    '#value' => $active_catalog
+  );
+
+  $form['acalog_active_catalog'] = array(
+    '#type' => "select",
+    '#title' => t("Active Acalog Catalog"),
+    '#default_value' => $active_catalog,
+    '#options' => $catalogs,
+    '#description' => t('Set the current Acalog catalog to pull course information')
+  );
+  
+  $form['#submit'][] = 'acalog_settings_form_catalog_change_submit';
+
+  return system_settings_form($form);
+}
+
+/**
+ * See if we need to update acalog catalog data and data panes after a setting change.
+ */
+function acalog_settings_form_catalog_change_submit($form, $form_state){
+  if ($form_state['values']['acalog_last_active_catalog'] != $form_state['values']['acalog_active_catalog']){
+    //make sure the actice catalog is set before doing the batch process update
+    variable_set('acalog_active_catalog', $form_state['values']['acalog_active_catalog']);
+    //update the course data.
+    acalog_data_batch_refresh_submit($form, $form_state);
+    //now update the course panes.
+    $active_catalog = $form_state['values']['acalog_active_catalog'];
+    $last_active_catalog = $form_state['values']['acalog_last_active_catalog'];
+    $acalog_programs = variable_get('acalog_programs', array());
+    $query = db_select('panels_pane', 'pp')->fields('pp', array('pid', 'configuration'))->condition('type', "acalog_pane", '=');
+    $results = $query->execute();
+    foreach ($results AS $pane){
+      $pane->configuration = unserialize($pane->configuration);
+      if (!empty($pane->configuration['acalog_program'])){
+        //if the program_id is in the current catalog then there is nothing to do
+        if (isset($acalog_programs[$active_catalog][$pane->configuration['acalog_program']])){
+          continue;
+        }
+        $new_program_id = array_search($acalog_programs[$last_active_catalog][$pane->configuration['acalog_program']], $acalog_programs[$active_catalog]);
+        if (!$new_program_id){ //lets try and retrieve from the DB, may be in another catalog.
+          $query = db_select('acalog_catalog_program', 'p')->fields('p', array('catalog_id'))->condition('program_id', $pane->configuration['acalog_program'], "=");
+          if ($catalog_id = $query->execute()->fetchField()){
+            $new_program_id = array_search($acalog_programs[$catalog_id][$pane->configuration['acalog_program']], $acalog_programs[$active_catalog]);
+          }
+        }
+        if ($new_program_id){
+          //save the pane
+          $pane->configuration['acalog_program'] = $new_program_id;
+          drupal_write_record('panels_pane', $pane, array('pid'));
+        } else {
+          //log this 
+          watchdog("acalog", "Unable to find program with ID of @program_id set in panels pane ID @pane_id when changing to catalog ID @catalog_id", array('@program_id' => $pane->configuration['acalog_program'],'@pane_id' => $pane->pid, '@catalog_id' => $active_catalog), WATCHDOG_NOTICE);
+        }
+      }
+    }
+  }
+}
+
+/**
+ *
+ */
+function acalog_course_panels_pane_edit($form, &$form_state){
+  $form = array();
+  if ($pane = acalog_load_course_panels_pane($form_state['build_info']['args'][0])){
+    drupal_set_title(t('Edit %panename', array('%panename' => $pane->configuration['override_title_text'])), PASS_THROUGH);
+    $form_state['conf'] = $pane->configuration;
+    $form = acalog_pane_edit_form($form, $form_state);
+    $form_state['pane'] = $pane;
+    $form['override_title_text']['#type'] = 'textfield';
+    $form['override_title_text']['#default_value'] = $form_state['conf']['override_title_text']; 
+    $form['submit'] = array(
+      '#type' => "submit",
+      '#value' => t("Save")
+    );
+  }
+  return $form;
+}
+
+/**
+ *
+ */
+function acalog_course_panels_pane_edit_submit($form, &$form_state){
+  $update = array(
+    'pid' => $form_state['pane']->pid
+  );
+  //let's populate the pane config
+  $update['configuration'] = $form_state['conf'];
+  foreach ($form_state['conf'] AS $key=>$value){
+    if (isset($form_state['values'][$key])){
+      $update['configuration'][$key] = $form_state['values'][$key];
+    }
+  }
+  if (drupal_write_record('panels_pane', $update, array('pid'))){
+  	if (function_exists('swat_varnish_find_panel_pane_pid_refs')){
+  		swat_varnish_find_panel_pane_pid_refs($update['pid']);
+  	}
+    drupal_set_message(t('Courses %panename panels pane updated.', array('%panename' => $update['configuration']['override_title_text'])));
+  } else {
+    drupal_set_message(t('Error updating %panename courses panels pane.', array('%panename' => $update['configuration']['override_title_text'])), 'error');
+  }
+}
+
+/**
+ *
+ */
+function acalog_load_course_panels_pane($pid){
+  $query = db_select('panels_pane', 'pp')->fields('pp')->condition('pp.pid', $pid, "=")->condition('pp.type', 'acalog_pane', '=');
+  $result = $query->execute()->fetchObject();
+  if (!is_object($result)){
+    return FALSE;
+  }
+  foreach ($result AS $key=>$field){
+    $result->{$key} = (@unserialize($field)) ? unserialize($field) : $field;
+  }
+  return $result;
+}
+
+/**
+ * Implementation of hook_cron()
+ */
+function acalog_cron(){
+  //make sure to only run the operations once a day
+  $last_complete_run = variable_get('acalog_last_cron_completion', 0);
+  if ($last_complete_run < date("Ymd")){ 
+    //set the "fake" batch context array
+    $context = array();
+
+    $operations = _acalog_batch_cron_operations();
+    $acalog_next_cron_operation = variable_get('acalog_next_cron_operation', 0);
+
+    for ($i = 0; $i < ACALOG_OPERATIONS_PER_CRON; $i++){
+      $current_op = $acalog_next_cron_operation + $i;
+      if (isset($operations[$current_op])){
+        $func = $operations[$current_op][0];
+        $args = $operations[$current_op][1];
+        call_user_func_array($func,  array_merge($args, array(&$context)));
+      }
+    }
+    if ($current_op >= count($operations)){ //we have run out of operations
+      variable_set('acalog_next_cron_operation', 0);
+      variable_set('acalog_last_cron_completion', date("Ymd"));
+      if (function_exists('swat_varnish_find_panel_pane_type_refs')){
+      	swat_varnish_find_panel_pane_type_refs("acalog_pane");
+      }
+    } else {
+      variable_set('acalog_next_cron_operation', $current_op + 1);
+    }
+  }
+}
+
+/**
+ * Implementation of hook_cronapi() provided by elysia cron
+ */
+function acalog_cronapi($op, $job = NULL) {
+  $items['acalog_cron'] = array(
+    'description' => 'Fetch acalog catalog data',
+    'rule' => '*/15 * * * *', // Every fifteen minutes
+  );
+
+  return $items;
+}
+
+/**
+ * Helper function that defines the batch processes for both batch process and cron hooks
+ */
+function _acalog_batch_cron_operations(){
+  $operations = array(
+    array('acalog_catalogs_variable_update', array()),
+    array('acalog_programs_variable_update', array()),
+  );
+
+  for ($i = 0; $i < ACALOG_PROGRAM_BATCH_SPLIT; $i++){
+    $operations[] = array('acalog_program_data_update', array($i));
+  }
+
+  for ($i = 0; $i < ACALOG_COURSE_BATCH_SPLIT; $i++){
+    $operations[] = array('acalog_course_data_update', array($i));
+  }
+
+  //update the template variable last
+  $operations[] = array('acalog_course_template_update', array());
+
+  return $operations;
+}
+
+/**
+ * Implements hook_ctools_plugin_directory().
+ */
+function acalog_ctools_plugin_directory($owner, $plugin_type) {
+  if ($owner == 'ctools' && $plugin_type == 'content_types') {
+    return 'plugins/' . $plugin_type;
+  }
+}
+
+/**
+ * Batch process all acalog catalog data
+ */
+function acalog_data_batch_refresh_submit($form, $form_state){
+  $batch = array(
+    'operations' => _acalog_batch_cron_operations(),
+    'finished' => 'acalog_data_batch_refresh_finished',
+    'title' => t('Updating all catalog data.'),
+    'init_message' => t('Catalog update is starting.'),
+    'progress_message' => t('Completed processing @percentage% of catalog data.'),
+    'error_message' => t('Catalog update has encountered an error.'),
+  );
+
+  batch_set($batch);
+}
+
+/**
+ * Batch process all acalog program data
+ */
+function acalog_program_data_batch_refresh_submit($form, $form_state){
+  if (!empty($form_state['values']['acalog_program_data_refresh_select'])){
+    $batch = array(
+      'operations' => array(
+        array("acalog_single_program_data_update", array($form_state['values']['acalog_program_data_refresh_select'])),
+      ),
+      'finished' => 'acalog_data_batch_refresh_finished',
+      'title' => t('Updating program data.'),
+      'init_message' => t('Program update is starting.'),
+      'progress_message' => t('Completed processing @percentage% of program data.'),
+      'error_message' => t('Program update has encountered an error.'),
+    );
+
+    for ($i = 0; $i < 5; $i++){
+      $batch['operations'][] = array('acalog_course_data_update', array($i));
+    }
+
+    batch_set($batch);
+  }
+}
+/**
+ * Batch 'finished' callback
+ */
+function acalog_data_batch_refresh_finished($success, $results, $operations) {
+  if ($success) {
+    // Here we do something meaningful with the results.
+    // Display the errors first
+    if (!empty($results['update_errors'])){
+      $message = t('@count errors occured during update.', array('@count' => count($results['update_errors'])));
+      $message .= theme('item_list', array('items' => $results['update_errors']));
+      drupal_set_message($message, "error");
+    }
+   
+    if (!empty($results['updated'])) {
+      $message = theme('item_list', array('items' => $results['updated']));
+      drupal_set_message($message);
+    } 
+    
+    if (function_exists('swat_varnish_find_panel_pane_type_refs')){
+      swat_varnish_find_panel_pane_type_refs("acalog_pane");
+    } 
+  }
+  else {
+    // An error occurred.
+    // $operations contains the operations that remained unprocessed.
+    $error_operation = reset($operations);
+    $message = t('An error occurred while processing %error_operation with arguments: @arguments', array('%error_operation' => $error_operation[0], '@arguments' => print_r($error_operation[1], TRUE)));
+    drupal_set_message($message, 'error');
+  }
+}
+
+/**
+ * Update the acalog_catalogs varaible.
+ */
+function acalog_catalogs_variable_update(&$context) {
+  $catalogs = acalog_fetch_all_catalogs();
+  
+  if (!count($catalogs)){
+    watchdog('acalog', 'Error refreshing active catalogs. Please check your !log_link for details.', array('!log_link' => l(t('Recent log messages'), 'admin/reports/dblog')), WATCHDOG_ERROR);
+    return FALSE;
+  }
+
+  variable_set('acalog_catalogs', $catalogs);
+  $context['results']['acalog_catalogs'] = $catalogs;
+  $context['message'] = $context['results']['updated'][] = t("{acalog_catalogs} variable updated.");
+  watchdog('acalog', '{acalog_courses} variable updated.', array(), WATCHDOG_INFO);
+  return TRUE;
+}
+
+/**
+ * Update the acalog_programs variable.
+ */
+function acalog_programs_variable_update(&$context) {  
+  $programs = acalog_fetch_all_programs();
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  if (empty($programs[$active_catalog])){
+    watchdog('acalog', 'Error refreshing active programs for catalog ID: @catalog_id. Please check your !log_link for details.', array('@catalog_id' => $active_catalog, '!log_link' => l(t('Recent log messages'), 'admin/reports/dblog')), WATCHDOG_ERROR);
+    return FALSE;
+  }
+
+  variable_set('acalog_programs', $programs);
+  $context['results']['acalog_programs'] = $programs;
+  $context['message'] = $context['results']['updated'][] = t("{acalog_programs} variable updated.");
+  watchdog('acalog', '{acalog_programs} variable updated. Catalog ID: @catalog_id', array('@catalog_id' => $active_catalog), WATCHDOG_INFO);
+  return TRUE;
+}
+
+/** 
+ * Finds all data for updated programs and stores in a database
+ */
+function acalog_program_data_update($index, &$context){
+  if (!isset($context['results']['acalog_programs'])) {
+    $context['results']['acalog_programs'] = variable_get('acalog_programs', array()); //in case we want to run this outside of batch mode
+  }
+  
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  if (!$active_catalog){
+    watchdog('acalog', 'Cannot retieve active Acalog program data, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    return FALSE;
+  }
+
+  $acalog_programs = $context['results']['acalog_programs'];
+  if (empty($acalog_programs[$active_catalog])){
+    watchdog('acalog', 'Cannot retieve active Acalog program data, no active program IDs found. Please check your !log_link for details. !acalog_admin_link', array('!log_link' => l(t('Recent log messages'), 'admin/reports/dblog'), '!acalog_admin_link' => l('Manually refresh catalogs and programs.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    return FALSE;
+  }
+  
+  if (!isset($context['results']['acalog_programs_to_update'])) {
+    //populate the list of programs that need to be updated
+    $all_program_ids = array_keys($context['results']['acalog_programs'][$active_catalog]);
+    $context['results']['acalog_programs_to_update'] = array();
+    $url = ACALOG_API_URL . "/v1/content?key=" . ACALOG_API_KEY . "&format=xml&method=getItems&type=programs&catalog=" . $active_catalog . "&options[full]=0&ids[]=" . implode('&ids[]=', $all_program_ids);
+    $dom = acalog_api_request($url);
+    if ($dom){
+      $mod_times = _acalog_program_modified_time_fetch($all_program_ids);
+      foreach ($dom->getElementsByTagName('program') AS $program_node){
+        $mod_date = _acalog_date_string_to_timestamp($program_node->getElementsByTagName('modified')->item(0)->nodeValue);
+        $program_id = preg_replace('/^.+?([0-9]+)$/', "$1", $program_node->attributes->getNamedItem('id')->nodeValue);
+        if ($mod_date > $mod_times[$program_id]){
+          $context['results']['acalog_programs_to_update'][] = $program_id;
+        }
+      }
+    }
+  }
+  //chunk all of the program ids
+  $total_programs = count($acalog_programs[$active_catalog]);
+  $num_per_batch = ceil($total_programs / ACALOG_PROGRAM_BATCH_SPLIT);
+  $chunked = array_chunk(array_keys($acalog_programs[$active_catalog]), $num_per_batch);
+  $current_chunk = (isset($chunked[$index])) ? $chunked[$index] : array();
+  $program_ids = $context['results']['acalog_programs_to_update'];
+  foreach($current_chunk AS $program_id){
+    //filter the current_chunk with programs that need updating
+    if (in_array($program_id, $program_ids)){
+      $status = acalog_fetch_program_data($program_id);
+      if ($status) {
+        $context['results']['updated'][] = t('Program %program_name updated.', array('%program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]));
+        watchdog('acalog', 'Program updated. Catalog ID: @catalog_id Program ID: @program_id Program name: @program_name', array('@catalog_id' => $active_catalog, '@program_id' => $program_id, '@program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]), WATCHDOG_INFO);
+      } else {
+        watchdog('acalog', 'Program update error. Catalog ID: @catalog_id Program ID: @program_id Program name: @program_name', array('@catalog_id' => $active_catalog, '@program_id' => $program_id, '@program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]), WATCHDOG_ERROR);
+        $context['results']['update_errors'][] = t('Error updating program %program_name data with program ID: %program_id', array('%program_name', $context['results']['acalog_programs'][$active_catalog][$program_id], '%program_id' => $program_id));
+      }
+    }   
+  }
+  return TRUE;
+}
+
+/**
+ * update a single program in a batch process call (will update courses after)
+ */
+function acalog_single_program_data_update($program_id, &$context){
+  $context['results']['acalog_programs'] = variable_get('acalog_programs', array()); 
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  $status = acalog_fetch_program_data($program_id);
+  if ($status) {
+    $context['results']['updated'][] = t('Program %program_name updated.', array('%program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]));
+    watchdog('acalog', 'Program updated. Catalog ID: @catalog_id Program ID: @program_id Program name: @program_name', array('@catalog_id' => $active_catalog, '@program_id' => $program_id, '@program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]), WATCHDOG_INFO);
+  } else {
+    watchdog('acalog', 'Program update error. Catalog ID: @catalog_id Program ID: @program_id Program name: @program_name', array('@catalog_id' => $active_catalog, '@program_id' => $program_id, '@program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]), WATCHDOG_ERROR);
+    $context['results']['update_errors'][] = t('Error updating program %program_name data with program ID: %program_id', array('%program_name', $context['results']['acalog_programs'][$active_catalog][$program_id], '%program_id' => $program_id));
+  }
+  //now we need to get the courses to update
+  $program_courses = array();
+  $query = db_select('acalog_catalog_program', 'p')->fields('p', array('program_courses'))->condition('p.program_id', $program_id, '=');
+  if ($serialized_courses = $query->execute()->fetchField()){
+    $program_courses = unserialize($serialized_courses);
+  }
+  $context['results']['all_course_ids'] = $program_courses;
+  $context['results']['courses_batch_split'] = 5;
+}
+
+/** 
+ * Finds all data for updated courses and stores in a database
+ */
+function acalog_course_data_update($index, &$context){
+  if (!isset($context['results']['all_course_ids'])) {
+    $context['results']['all_course_ids'] = _acalog_get_all_course_ids();
+  }
+
+  if (!isset($context['results']['courses_batch_split'])) {
+    $context['results']['courses_batch_split'] = ACALOG_COURSE_BATCH_SPLIT;
+  }
+
+  $course_ids = $context['results']['all_course_ids'];
+  $total_courses = count($course_ids);
+  if ($total_courses) {
+    $num_per_batch = ceil($total_courses / $context['results']['courses_batch_split']);
+    $chunked = array_chunk($course_ids, $num_per_batch);
+    if (isset($chunked[$index])){
+      acalog_fetch_course_data($chunked[$index], $context);
+    }
+  }
+}
+
+
+/**
+ *
+ */
+function acalog_fetch_course_data($ids, &$context){
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  if (!$active_catalog){
+    watchdog('acalog', 'Cannot retieve Acalog course data, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    return FALSE;
+  }
+  $url = ACALOG_API_URL . "/v1/content?key=". ACALOG_API_KEY . "&format=xml&method=getItems&type=courses&catalog=" . $active_catalog . "&options[full]=1&ids[]=" . implode('&ids[]=', $ids);
+  $dom = acalog_api_request($url, FALSE);
+  if ($dom){
+    $mod_times = _acalog_course_modified_time_fetch($ids);
+    foreach ($dom->getElementsByTagName('courses') AS $course_block){
+      //build the field map
+      $field_map = acalog_create_course_field_map($course_block);
+      $course_dom = $course_block->getElementsByTagName('course')->item(0);
+      $record = array();
+      $record['course_id'] = preg_replace("/^.+?([0-9]+)$/", "$1", $course_dom->attributes->getNamedItem('id')->nodeValue);
+      $record['catalog_id'] = $active_catalog;
+      $record['modified_date'] = _acalog_date_string_to_timestamp($course_dom->getElementsByTagName('modified')->item(0)->nodeValue);
+      if ($record['modified_date'] > $mod_times[$record['course_id']]){ //only updated if mod time is newer
+        $record['course_data'] = array();
+        foreach ($course_dom->getElementsByTagName('content')->item(0)->getElementsByTagName('field') AS $field_dom){
+          if (in_array($field_dom->attributes->getNamedItem('type')->nodeValue, array_keys($field_map)) AND strlen($field_dom->getElementsByTagName('data')->item(0)->nodeValue)){
+            $record['course_data'][$field_map[$field_dom->attributes->getNamedItem('type')->nodeValue]] = _acalog_clean_field_html($dom->saveXML($field_dom->getElementsByTagName('data')->item(0)));    
+          }
+        }
+        $record['course_prefix'] = $record['course_data']['Prefix'];
+        $record['course_code'] = $record['course_data']['Code'];
+        $record['course_name'] = $record['course_data']['Name'];
+        $write_keys = array();
+        if ($mod_times[$record['course_id']]) { //mod_times will be non-zero if existing
+          $write_keys[] = 'course_id';
+        }
+        if (drupal_write_record('acalog_catalog_course', $record, $write_keys)){
+          $context['results']['updated'][] = t("Course @course_prefix  @course_code. @course_name updated.", array('@course_prefix' => $record['course_prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name']));
+          watchdog('acalog', 'Course updated. Catalog ID: @catalog_id Course ID: @course_id Course name: @course_prefix @course_code. @course_name', array('@catalog_id' => $active_catalog, '@course_id' => $record['course_id'], '@course_prefix' => $record['course_prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name']), WATCHDOG_INFO);
+          //update the course semester offerings
+          db_delete('acalog_catalog_course_semester')->condition('course_id', $record['course_id'], '=')->execute();
+          foreach ($record['course_data'] AS $key=>$data){
+            if (preg_match('/^(spring|fall|winter|summer)\s+[0-9]{4}\.?$/i', $key)){
+              $sem_record = array(
+                'course_id' => $record['course_id'],
+                'semester' => strtolower(rtrim($key, '.'))
+              );
+              $status = drupal_write_record('acalog_course_semester', $sem_record);
+              if (!$status){
+                watchdog('acalog', 'Course semester update error. Catalog ID: @catalog_id Course ID: @course_id Course name: @course_prefix @course_code. @course_name', array('@catalog_id' => $active_catalog, '@course_id' => $record['catalog_id'], '@course_prefix' => $record['course_prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name']), WATCHDOG_ERROR);
+                $context['results']['update_errors'][] = t('Error updating course semester offerings for @course_prefix  @course_code. @course_name with course ID: %course_id', array('@course_prefix' => $record['course_prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name'], '%course_id' => $record['catalog_id']));
+              }  
+            }
+          }
+        } else {
+          watchdog('acalog', 'Course update error. Catalog ID: @catalog_id Course ID: @course_id Course name: @course_prefix @course_code. @course_name', array('@catalog_id' => $active_catalog, '@course_id' => $record['catalog_id'], '@course_prefix' => $record['course_prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name']), WATCHDOG_ERROR);
+          $context['results']['update_errors'][] = t('Error updating course data for course ID: %course_id', array('%course_id' => $record['catalog_id']));
+        }
+      }
+    }
+  }
+  return TRUE;
+}
+
+function acalog_course_template_update(){
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  if (!$active_catalog){
+    watchdog('acalog', 'Cannot retieve Acalog course template info, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    return FALSE;
+  }
+  $course_templates = (array)variable_get('acalog_course_template', array());
+  //fetch the most recently updated course id
+  $query = db_select('acalog_catalog_course', 'c')->fields('c', array('course_id'))->condition('c.catalog_id', $active_catalog, '=')->orderBy('c.modified_date', 'DESC')->range(0,1);
+  if ($course_id = $query->execute()->fetchField()){
+    $url = ACALOG_API_URL . "/v1/content?key=". ACALOG_API_KEY . "&format=xml&method=getItems&type=courses&catalog=" . $active_catalog . "&options[full]=1&ids[]=" . $course_id;
+    $dom = acalog_api_request($url, FALSE);
+    if ($dom){
+      $course_fields = $dom->getElementsByTagName('courses')->item(0)->getElementsByTagName('fields')->item(0);
+      $course_template = array(); //an array of visible items for the course
+      foreach($course_fields->getElementsByTagName('field') AS $field){
+        if ($field->getElementsByTagName('title')->length AND preg_match('/^.*[a-zA-Z]+.*$/', $field->getElementsByTagName('title')->item(0)->nodeValue) AND $field->attributes->getNamedItem('template')->nodeValue == "body" AND $field->attributes->getNamedItem('visibility')->nodeValue == "visible"){
+          $label_display = ($field->getElementsByTagName('name')->item(0)->attributes->getNamedItem('visibility')->nodeValue != "hidden");
+          if ($label_display){
+            $label_display = $field->getElementsByTagName('name')->item(0)->attributes->getNamedItem('placement')->nodeValue;
+          }
+          $course_template[$field->getElementsByTagName('title')->item(0)->nodeValue] = array(
+            'show_label' => $label_display
+          );
+        }
+      }
+      //Manually add the instructor note, no longer in the template... Arg!
+      $course_template['Instructor Note'] = array(
+        'show_label' => FALSE
+      );
+      if (count($course_template)){
+        $course_templates[$active_catalog] = $course_template;
+        variable_set('acalog_course_template', $course_templates);
+      }
+    }
+  }
+}
+
+function _acalog_program_modified_time_fetch($ids){
+  $mod_times = array();
+  $query = db_select('acalog_catalog_program', 'p');
+  $query->fields('p', array('program_id', 'modified_date'));
+  $query->condition('p.program_id', array($ids), "IN");
+  foreach ($query->execute() AS $row){
+    $mod_times[$row->program_id] = $row->modified_date;
+  }
+  
+  //fill in any new ids (not in DB)
+  foreach ($ids AS $id){
+    if (!in_array($id, array_keys($mod_times))){
+      $mod_times[$id] = 0;
+    }
+  }
+
+  return $mod_times;
+}
+
+function _acalog_course_modified_time_fetch($ids){
+  $mod_times = array();
+  $query = db_select('acalog_catalog_course', 'c');
+  $query->fields('c', array('course_id', 'modified_date'));
+  $query->condition('c.course_id', array($ids), "IN");
+  foreach ($query->execute() AS $row){
+    $mod_times[$row->course_id] = $row->modified_date;
+  }
+  
+  //fill in any new ids (not in DB)
+  foreach ($ids AS $id){
+    if (!in_array($id, array_keys($mod_times))){
+      $mod_times[$id] = 0;
+    }
+  }
+
+  return $mod_times;
+}
+
+/**
+ * Map the field IDs to the field names=
+ */
+function acalog_create_course_field_map($course_items_xmldom){
+  $field_map = array();
+  foreach($course_items_xmldom->getElementsByTagName('fields')->item(0)->getElementsByTagName('field') AS $field){
+    if ($field->getElementsByTagName('title')->length AND preg_match('/^.*[a-zA-Z]+.*$/', $field->getElementsByTagName('title')->item(0)->nodeValue)){
+      $field_map[$field->attributes->getNamedItem('id')->nodeValue] = $field->getElementsByTagName('title')->item(0)->nodeValue;
+    }
+  }
+  return $field_map;
+}
+
+/**
+ * 
+ */
+function _acalog_get_all_course_ids(){
+  $ret_val = TRUE;
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  if (!$active_catalog){
+    watchdog('acalog', 'Cannot retieve active Acalog program data, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    return FALSE;
+  }
+  $acalog_program_ids = variable_get('acalog_programs', array());
+  if (empty($acalog_program_ids[$active_catalog])){
+    watchdog('acalog', 'Cannot retieve Acalog program course ids, no active program IDs found. Please check your !log_link for details. !acalog_admin_link', array('!log_link' => l(t('Recent log messages'), 'admin/reports/dblog'), '!acalog_admin_link' => l('Manually refresh catalogs and programs.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    return FALSE;
+  }
+  
+  //build a large array containing all of the course ids
+  $all_courses = array();
+  $query = db_select('acalog_catalog_program', 'p');
+  $query->fields('p', array('program_courses'));
+  $query->condition('p.program_id', array_keys($acalog_program_ids[$active_catalog]), 'IN');
+  $results = $query->execute()->fetchCol();
+  foreach($results AS $result){
+    $all_courses = array_merge($all_courses, unserialize($result));
+  }
+  $all_courses = array_values(array_unique($all_courses)); //remove duplicates
+  return $all_courses;
+}
+
+/**
+ * Do an HTTP get request to Acalog's API and return the XML DOM, return FALSE on error
+ * Log the error when there is an error
+ */
+function acalog_api_request($url, $xinclude = TRUE){
+  $response = drupal_http_request($url);
+  if ($response->code == 200){
+    $dom = new DOMDocument();
+    if ($dom->loadXML($response->data)){
+      //$dom->documentURI = $url;
+      //Subsitute xinclude elements
+      if ($xinclude){
+        $xinclude_status = $dom->xinclude(LIBXML_XINCLUDE);
+      } else {
+        $xinclude_status = 1;
+      }
+      if ($xinclude_status >= 0){
+        return $dom; //success!
+      }
+      watchdog('acalog', 'Error doing xinclude substitution on XML data retrieved from Acalog API. DOMDOcument->xinclude error. Endpoint URL: %api_url', array('%api_url' => $url), WATCHDOG_ERROR);
+    } else {
+      watchdog('acalog', 'Error parsing XML data retrieved from Acalog API. DOMDOcument->loadXML failed. Endpoint URL: %api_url', array('%api_url' => $url), WATCHDOG_ERROR);
+    }
+  } else {
+    watchdog('acalog', 'Error retrieving data from Acalog API. Error code: %err_code Error: %err Endpoint URL: %api_url', array('%err_code' => $response->code, '%err' => $response->error, '%api_url' => $url), WATCHDOG_ERROR);
+  }
+  return FALSE;
+}
+
+/**
+ * Returns all catalog names from acalog keyed by catalog id
+ */
+function acalog_fetch_all_catalogs(){
+  $catalogs = array();
+
+  $url = ACALOG_API_URL . "/v1/content?key=" . ACALOG_API_KEY . "&format=xml&method=getCatalogs"; 
+  if (ACALOG_ONLY_SHOW_ACTIVE_CATALOGS){
+     $url .= "&only_active=1";
+  }
+  $dom = acalog_api_request($url);
+  if ($dom){
+    foreach ($dom->getElementsByTagName('catalog') AS $catalog_node){
+      $title = $catalog_node->getElementsByTagName('title')->item(0)->nodeValue;
+      if ($catalog_node->getElementsByTagName('archived')->item(0)->nodeValue == "Yes"){
+        $title .= " (archived)";
+      }
+      $catalog_id = preg_replace('/^.+?([0-9]+)$/', "$1", $catalog_node->attributes->getNamedItem('id')->nodeValue);
+      $catalogs[$catalog_id] = $title;
+    }
+  }
+  if (!count($catalogs)){
+    watchdog('acalog', 'No active Acalog catalogs found using API. Endpoint URL: %api_url', array('%api_url' => $url), WATCHDOG_NOTICE);
+  }
+  return $catalogs;
+}
+
+/**
+ * Returns all programs from the currently selected Acalog catalog (active catalog in drupal)
+ */
+function acalog_fetch_all_programs(){
+  $programs = variable_get('acalog_programs', array());
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  if (!$active_catalog){
+    watchdog('acalog', 'Cannot retieve active Acalog programs, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    return $programs;
+  }
+  $url = ACALOG_API_URL . "/v1/search/programs?key=" . ACALOG_API_KEY . "&format=xml&method=listing&options[sort]=alpha&options[limit]=0&catalog=" . $active_catalog;
+  $dom = acalog_api_request($url, FALSE);
+  if ($dom){
+    foreach ($dom->getElementsByTagName('result') AS $result){
+      $programs[$active_catalog][$result->getElementsByTagName('id')->item(0)->nodeValue] = $result->getElementsByTagName('name')->item(0)->nodeValue;
+    }
+  }
+  if (empty($programs[$active_catalog])){
+    watchdog('acalog', 'No active Acalog programs found using API. Endpoint URL: %api_url', array('%api_url' => $url), WATCHDOG_NOTICE);
+  }
+  return $programs;
+}
+
+/** 
+ * Finds all data for a single program and stores in a database
+ */
+function acalog_fetch_program_data($program_id){
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  $url = ACALOG_API_URL . "/v1/content?key=" . ACALOG_API_KEY . "&format=xml&method=getItems&type=programs&catalog=" . $active_catalog . "&ids[]=" . $program_id;
+  $dom = acalog_api_request($url);
+  if ($dom){
+    $record = array();
+    $program_title = $dom->getElementsByTagName('title')->item(0)->nodeValue;
+    $record['program_id'] = $program_id;
+    $record['catalog_id'] = $active_catalog;
+    $record['modified_date'] = 0;
+    foreach($dom->getElementsByTagName('program')->item(0)->childNodes AS $prog_child){
+      if ($prog_child->nodeName == "modified"){
+        $record['modified_date'] = _acalog_date_string_to_timestamp($prog_child->nodeValue);
+        break;
+      }
+    }
+    //get the program core data (used to generate the list of course ids)
+    $course_listings = array();
+    foreach ($dom->getElementsByTagName('cores')->item(0)->childNodes AS $child){
+      if ($child->nodeName == "core"){ 
+        if ($child->getElementsByTagName('course')->length){ //only parse if there are courses listed in the core
+          $core_courses = acalog_fetch_program_core($child, $dom);
+          if (!empty($core_courses)){
+            $course_listings = array_merge($course_listings, $core_courses);
+          }
+        }
+      }
+    }
+    $record['program_cores'] = $course_listings;
+    $record['program_courses'] = acalog_all_program_course_ids($record['program_cores']);
+
+
+    //populate new acalog_program_courses table here (if we decide to do so)
+
+    $write_keys = array();
+    $query = db_select('acalog_catalog_program', 'p');
+    $query->addExpression('COUNT(*)', 'progexists');
+    $query->condition('p.program_id', (int)$program_id, '=');
+    $result = $query->execute();
+    $exists = $result->fetchField();
+    if ($exists){
+      $write_keys[] = "program_id";
+    }
+    return drupal_write_record('acalog_catalog_program', $record, $write_keys);
+
+  }
+  return FALSE;
+}
+
+function acalog_fetch_program_core($core_dom, $program_dom){
+  $courses = array();
+  $core_id = 'core-' . preg_replace("/^.+?([0-9]+)$/", "$1", $core_dom->attributes->getNamedItem('id')->nodeValue);
+  foreach ($core_dom->childNodes AS $child){
+    if ($child->localName == "children"){
+      foreach ($child->childNodes AS $grandchild){
+        if ($grandchild->nodeName == "core"){
+          $children = acalog_fetch_program_core($grandchild, $program_dom);
+          if (count($children)){
+            if (!isset($courses[$core_id])){ //may not contain courses
+              $courses[$core_id] = array();
+            }
+            $courses[$core_id] = array_merge($courses[$core_id], $children);
+          }
+        }
+      }
+    }
+    
+    if ($child->localName == "title" AND strlen($child->nodeValue)){
+      $courses[$core_id]['title'] = $child->nodeValue;
+    }
+    
+    if ($child->localName == "content"){
+      if (strlen($child->nodeValue)){
+        //TODO cleanup the HTML content
+        $courses[$core_id]['content'] = _acalog_clean_field_html($program_dom->saveXML($child));
+      } else {
+        $courses[$core_id]['content'] = "";
+      }
+    }
+    
+    if ($child->localName == "courses"){
+      //grab this title and content
+      foreach ($child->childNodes AS $course_data){
+        if ($course_data->localName == "course"){ 
+          $course_id = preg_replace('/^.+?([0-9]+)$/', "$1", $course_data->attributes->getNamedItem('id')->nodeValue);
+          $courses[$core_id]["course" . '-' . $course_id] = $course_data->getElementsByTagName('title')->item(0)->nodeValue;
+        }
+        if ($course_data->localName == "adhoc"){ 
+          $course_id = preg_replace('/^.+?([0-9]+)$/', "$1", $course_data->attributes->getNamedItem('course')->nodeValue);
+          $position = $course_data->attributes->getNamedItem('position')->nodeValue;
+          $title = $course_data->getElementsByTagName('title')->item(0)->nodeValue;
+          if ($position == "after"){
+            $courses[$core_id]["adhoc" . '-a' . $course_id] = $title;
+          }
+          if ($position == "before"){
+            $courses[$core_id]["adhoc" . '-b' . $course_id] = $title;
+          } 
+          if ($position == "left"){
+            $courses[$core_id]["course" . '-' . $course_id] = $title . $courses[$core_id]["course" . '-' . $course_id];
+          }
+          if ($position == "right"){
+            $courses[$core_id]["course" . '-' . $course_id] .= $title;
+          }
+        }
+      }
+    }
+  }
+  return $courses;
+}
+
+/**
+  * Parse all course ids out of a program's core array_tree
+  */
+function acalog_all_program_course_ids($program_array, $course_ids = array()){
+  foreach ($program_array AS $key=>$data){
+    if (is_array($data)){
+      $course_ids = acalog_all_program_course_ids($data, $course_ids);
+    }
+    if (preg_match('/^course\-[0-9]+$/', $key)){
+      $course_ids[] = preg_replace('/^course\-([0-9]+)$/', "$1", $key);
+    }
+  }
+  return array_unique($course_ids);
+}
+
+/**
+ * Helper function that turns an Acalog date string into a Unix Timestamp
+ */
+function _acalog_date_string_to_timestamp($string){
+  if (strpos($string, '-')){ //handle inconsistant Acalog time formats
+    return date_create_from_format("Y-m-d H:i:s", $string)->getTimestamp();
+  }
+  return date_create_from_format("m/d/Y H:i:s", $string)->getTimestamp();
+}
+
+/**
+ * Clean up field XML(HTML)
+ */
+function _acalog_clean_field_html($raw_html){
+  //remove wrapping prefix
+  $raw_html = preg_replace("/^<[^\s>]+[^>]*>(.+)<\/[^>]+>$/m", "$1", $raw_html);
+  //remove namespace and namespace tag prefix
+  $raw_html = str_replace(array(' xmlns:h="http://www.w3.org/1999/xhtml"', '<h:', '</h:', '&lt;', '&gt;'), array('', '<', '</', '<', '>'), $raw_html);
+  //transform any permalinks
+  // Ex: <permalink link-id="acalog-permalink-374" to="acalog-course-7822" type="tooltip"><a:title xmlns:a="http://www.w3.org/2005/Atom">CHIN 007</a:title></permalink>
+  $raw_html = preg_replace_callback("/<permalink[^>]+to=\"acalog\-course\-([0-9]+)\"[^<]+<a:title[^>]+>([^<]+)<\/a:title><\/permalink>/m", 
+    function($matches){
+      $link_url = acalog_course_url($matches[1]);
+      return l($matches[2], $link_url, array('html' => TRUE, 'attributes' => array('target' => "_blank", 'class' => array('acalog-course-link'))));
+    }, $raw_html);
+  //fix escaped html (only have seen this happen with paragraph tags...)
+  return preg_replace("/&lt;(\/?(p))&gt;/m", "<$1>", $raw_html);
+}
+
+/**
+ * Returns a list of all the course prefixes
+ */
+function _acalog_pane_get_course_prefixes(){
+  static $prefixes = array();
+  if (empty($prefixes)){
+    $query = db_select('acalog_catalog_course', 'c');
+    $query->distinct();
+    $query->fields('c', array('course_prefix'))->orderBy('c.course_prefix');
+    $prefixes = $query->execute()->fetchCol();
+  }
+  return $prefixes;
+}
+
+/**
+ * Panel pane display functions below
+ */
+function acalog_query_courses_by_program_or_prefix($program_id, $group_by_semester = TRUE){
+  $prefix = $continue = FALSE;
+  if (preg_match('/^prefix:[A-Z]+$/', $program_id)){
+    list($preid, $prefix) = explode(':', $program_id);
+  }
+  $program_courses = array();
+  if ($prefix){
+    $query = db_select('acalog_catalog_course', 'c');
+    $query->fields('c');
+    $query->condition('c.course_prefix', $prefix, '=');
+    //the following condition makes sure the courses selected are currently active (part of a program)
+    $query->condition('c.course_id', _acalog_get_all_course_ids(), 'IN');
+    $continue = TRUE;
+  } else { //return all course in a program
+    $query = db_select('acalog_catalog_program', 'p');
+    $query->fields('p', array('program_courses'));
+    $query->condition('p.program_id', $program_id, '=');
+    if ($courses = $query->execute()->fetchField()){
+      $courses = unserialize($courses);
+      $query = db_select('acalog_catalog_course', 'c');
+      $query->fields('c');
+      $query->condition('c.course_id', $courses, 'IN');
+      $continue = TRUE;
+    }
+  }
+
+  if ($continue){
+    if ($group_by_semester){
+      $query->addField('s', 'semester');
+      $query->innerJoin('acalog_catalog_course_semester', 's', 's.course_id = c.course_id');
+      $query->orderBy('s.semester');
+    }
+    $query->orderBy('c.course_prefix');
+    $query->orderBy('c.course_code');
+    
+    $result = $query->execute();
+
+    foreach ($result AS $row){
+      $row->course_data = unserialize($row->course_data);
+      if ($group_by_semester){
+        $program_courses[$row->semester][$row->course_id] = (array)$row;
+      } else {
+        $program_courses['All Courses'][$row->course_id] = (array)$row;
+      }
+    }
+    if ($group_by_semester){
+      uksort($program_courses, '_acalog_sort_semesters');
+    }
+  }
+
+  return $program_courses;
+}
+
+/**
+ * Implementation of hook_panels_pane_insert()
+ */
+function acalog_panels_pane_insert($pane) {
+  if ($pane->type == "acalog_pane"){
+    $pane->configuration['acalog_pid'] = $pane->pid;
+    drupal_write_record('panels_pane', $pane, array('pid')); //silly I have to do this really.
+  }
+}
+
+/**
+ * Return the list of unique semesters available in a catalog
+ */
+function acalog_query_unique_catalog_semsters(){
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  $query = db_select('acalog_catalog_course_semester', 's');
+  $query->fields('s', array('semester'))->distinct();
+  $query->innerJoin('acalog_catalog_course', 'c', 'c.course_id = s.course_id');
+  $query->condition('c.catalog_id', $active_catalog, '=');
+  $semesters = $query->execute()->fetchCol();
+  usort($semesters, '_acalog_sort_semesters');
+  return $semesters;
+}
+
+function _acalog_sort_semesters($a, $b){
+  $semesters = array('spring', 'summer', 'fall', 'winter');
+  list($asemester, $ayear) = explode(' ', $a);
+  list($bsemester, $byear) = explode(' ', $b);
+  if ($ayear < $byear) {
+    return -1;
+  } else if ($ayear > $byear) {
+    return 1;
+  } else {
+    if (array_search($asemester, $semesters) < array_search($bsemester, $semesters)){
+      return -1;
+    }
+    return 1;
+  }
+}
+
+/**
+ * Implements hook_get_pane_links_alter().
+ */
+function acalog_get_pane_links_alter(&$links, $pane, $content_type) {
+  if ($pane->type == 'custom') {
+    if(!isset($pane->configuration['name'])) {
+      $name_of_pane = $pane->subtype;
+    }
+    else {
+      $name_of_pane = $pane->configuration['name'];
+    }
+
+    $links['top']['edit_custom_content'] = array(
+      'title' => t('Edit custom content pane'),
+      'href' => url('admin/structure/ctools-content/list/' . $name_of_pane . '/edit', array('absolute' => TRUE)),
+      'attributes' => array('target' => array('_blank')),
+    );
+  }
+}
+
+/**
+ * Implementaion of hook_preprocess_panels_pane()
+ */
+function acalog_preprocess_panels_pane(&$variables, $hook) {
+  if($variables['pane']->type == "acalog_pane"){
+    //hide the title if wanted.
+    if (!empty($variables['pane']->configuration['component_hide_title'])){
+      $variables['title'] = '';
+    }
+  }
+}
+
+/**
+ * Implementation of hook_theme
+ */
+function acalog_theme($existing, $type, $theme, $path){
+  return array(
+    'acalog_course_listing' => array(
+      'conf' => array(),
+    ),
+    'acalog_course_link' => array(
+      'course' => array(),
+    ),
+    'acalog_additional_field' => array(
+      'field_settings' => array(),
+    ),
+  );
+}
+
+/**
+ * Returns the acalog URL for a course when given a course id and optionally a catalog_id
+ */
+function acalog_course_url($course_id, $catalog_id = FALSE){
+  if (!$catalog_id){
+    $catalog_id = variable_get("acalog_active_catalog", 0);
+  }
+  return url("http://catalog.swarthmore.edu/preview_course.php", array('query' => array('catoid' => $catalog_id, 'coid' => $course_id)));
+}
+
+/**
+ * Returns the expiration date for a semester
+ */
+function acalog_semester_exipiration($semester){
+  if (preg_match('/^(spring|fall|winter|summer)\s+([0-9]{4})\.?$/i', $semester, $matches)){
+    $term = $matches[1];
+    $year = (int)$matches[2];
+    switch(strtolower($term)){
+      case 'spring':
+        $day = 31;
+        $month = 5;
+        break;
+      case 'summer':
+        $day = 1;
+        $month = 9;
+        break;
+      case 'winter':
+        $day = 1;
+        $month = 3;
+        break;
+      case 'fall':
+      default:
+        $day = 31;
+        $month = 12;
+    }
+    return mktime(null, null, null, $month , $day, $year);
+  } 
+  return time() + 10000; //not expired
+}
+
+/**
+ * returns true if a semester is expired, false otherwise
+ */
+function acalog_is_semester_expired($semester){
+  return (time() > acalog_semester_exipiration($semester));
+}
+
+function theme_acalog_course_link($course){
+  $link_name = $course['course_prefix'] . ' ' . $course['course_code'] . '. ' . $course['course_name'];
+  $link_url = acalog_course_url($course['course_id'], $course['catalog_id']);
+  return l($link_name . ' <i class="fa fa-angle-right pull-right"></i>', $link_url, array('html' => TRUE, 'attributes' => array('target' => "_blank", 'class' => array('acalog-course-link'))));
+}
+
+function theme_acalog_additional_field($field_render){
+  $content = "";
+  
+  if ($field_render['show_label'] == "before"){
+    $content .= $field_render['field_label'] . " ";
+  }
+  $content .= $field_render['field_value'];
+  if ($field_render['show_label'] == "after"){
+    $content .= " " . $field_render['field_label'];
+  }
+  return $content;
+}
+
+function theme_acalog_course_listing($conf){
+  $show_all = ($conf['acalog_num_semesters'] == "all");
+  $num_sems = ($show_all) ? 1 : $conf['acalog_num_semesters'];
+ 
+  $all_courses = acalog_query_courses_by_program_or_prefix($conf['acalog_program'], !$show_all);
+  if (!count($all_courses)){
+    return "";
+  }
+  $content = array();
+  $i = 0;
+  $semesters = array();
+  $templates = variable_get('acalog_course_template', array());
+  $template = $templates[variable_get('acalog_active_catalog', 0)];
+  $content['custom_header'] = array(
+    '#markup' => (!empty($conf['custom_header']['value'])) ? $conf['custom_header']['value'] : "",
+    '#weight' => 0
+  );
+  $content['jump_nav'] = array(
+    '#weight' => 3,
+    '#nav_links' => array(),
+    '#markup' => ""
+  );
+  $content['semesters'] = array(
+    '#tree' => TRUE,
+    '#weight' => 5
+  );
+  $content['custom_footer'] = array(
+    '#markup' => (!empty($conf['custom_footer']['value'])) ? $conf['custom_footer']['value'] : "",
+    '#weight' => 9
+  );
+  
+  foreach ($all_courses AS $semester=>$courses){
+    if (acalog_is_semester_expired($semester)){
+      continue;
+    }
+    $i++;
+    if ($i > $num_sems){
+      break;
+    }
+    $courses_data = array();
+    foreach ($courses AS $key=>$course){
+      $title = theme('acalog_course_link', $course);
+      $course_fields = array();
+      //substitute in the instructor name from the term if it is set
+      $semester_key = FALSE;
+      if (isset($course['course_data'][ucfirst($semester)])){
+        $semester_key = ucfirst($semester);
+      } else if (isset($course['course_data'][ucfirst($semester) . '.'])){
+        $semester_key = ucfirst($semester) . '.';
+      } else if (isset($course['course_data'][$semester])){
+        $semester_key = $semester;
+      }
+      if (isset($course['course_data'][$semester_key]) AND !preg_match('/^offered.*$/i', $course['course_data'][$semester_key])){  
+        $course['course_data']['Instructor Note'] = $course['course_data'][$semester_key];
+      }
+      foreach (array_values(array_filter($conf['acalog_additional_fields'])) AS $field_name){
+        if (isset($course['course_data'][$field_name]) AND isset($template[$field_name])){
+          $field_render = $template[$field_name];
+          $field_render['field_value'] = $course['course_data'][$field_name];
+          $field_render['field_label'] = $field_name;
+          $course_fields[] = array(
+            'data' => theme("acalog_additional_field", $field_render),
+            'class' => array('list-group-item acalog-course-field')
+          );
+        }
+      }
+      $courses_data[$key] = array(
+        'data' => $title . theme("item_list", array('items' => $course_fields, 'attributes' => array('class' => array('list-group acalog-course-field-list')))),
+        'class' => array('list-group-item')
+      );
+    }
+    $semester_id = preg_replace('/\s+/', '-', strtolower($semester));
+    $content['jump_nav']['#nav_links'][] = '<a href="#' . $semester_id . '">' . ucfirst($semester) . '</a>'; // l(ucfirst($semester), "", array('fragment' => $semester_id));
+    $content['semesters'][$semester] = array(
+      '#markup' => '<div id="' . $semester_id . '" class="panel panel-default acalog-semester-course-listing"><div class="panel-heading"><h3 class="panel-title">' . ucfirst($semester) . '</h3></div><div class="panel-body">' . theme("item_list", array('items' => $courses_data, 'attributes' => array('class' => array('list-group', 'acalog-course-listing')))) . '</div></div>'
+    );
+  }
+  if ($num_sems > 1){
+    $content['jump_nav']['#markup'] = theme("item_list", array('items' => $content['jump_nav']['#nav_links'], 'attributes' => array('class' => array('nav', 'nav-pills'))));
+  }
+  $content['#attached']['js'][] = array(
+    'data' => drupal_get_path('module', 'acalog') .'/js/acalog.js',
+    'type' => 'file'
+  );
+  
+  return $content;
+}

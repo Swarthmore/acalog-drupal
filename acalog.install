@@ -1,0 +1,140 @@
+<?php
+
+/**
+ * @file
+ *   Swarthmore Acalog catalog module install/schema hooks.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function acalog_schema() {
+  $schema = array();
+
+  $schema['acalog_catalog_program'] = array(
+    'description' => 'Contains Acalog catalog academic program info.',
+    'fields' => array(
+      'program_id' => array(
+        'description' => 'The Acalog id for the program.',
+        'type' => 'int',
+        'size' => 'normal',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'catalog_id' => array(
+        'description' => 'The Acalog id for the catalog that contains the program.',
+        'type' => 'int',
+        'size' => 'normal',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'modified_date' => array(
+        'description' => 'The unix timestamp of the program modification date.',
+        'type' => 'int',
+        'size' => 'normal',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'program_cores' => array(
+        'description' => 'Serialized array of the program cores (as a tree) that contain course data.',
+        'type' => 'text',
+        'not null' => TRUE,
+        'serialize' => TRUE,
+      ),
+      'program_courses' => array(
+        'description' => 'Serialized array of the course ids contained in the program.',
+        'type' => 'text',
+        'not null' => TRUE,
+        'serialize' => TRUE,
+      ),
+    ),
+    'primary key' => array('program_id'),
+    'indexes' => array(
+      'modified_date' => array('modified_date'),
+    ),
+  );
+
+  $schema['acalog_catalog_course'] = array(
+    'description' => 'Contains Acalog catalog course info.',
+    'fields' => array(
+      'course_id' => array(
+        'description' => 'The Acalog id for the course.',
+        'type' => 'int',
+        'size' => 'normal',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'catalog_id' => array(
+        'description' => 'The Acalog id for the catalog that contains the course.',
+        'type' => 'int',
+        'size' => 'normal',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'modified_date' => array(
+        'description' => 'The unix timestamp of the course modification date.',
+        'type' => 'int',
+        'size' => 'normal',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'course_prefix' => array(
+      	'description' => 'The 4 letter course prefix',
+      	'type' => 'varchar',
+        'length' => 8,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'course_code' => array(
+      	'description' => 'The alpha-numeric course code',
+      	'type' => 'varchar',
+        'length' => 8,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'course_name' => array(
+      	'description' => 'The human readable course name',
+      	'type' => 'varchar',
+        'length' => 200,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'course_data' => array(
+        'description' => 'Serialized array of all of the course data that is available.',
+        'type' => 'text',
+        'not null' => TRUE,
+        'serialize' => TRUE,
+      ),
+    ),
+    'primary key' => array('course_id'),
+    'indexes' => array(
+      'modified_date' => array('modified_date'),
+    ),
+  );
+  
+  $schema['acalog_catalog_course_semester'] = array(
+    'description' => 'Contains the semsters a course is offered.',
+    'fields' => array(
+      'course_id' => array(
+        'description' => 'The Acalog id for the course.',
+        'type' => 'int',
+        'size' => 'normal',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'semester' => array(
+      	'description' => 'The semester offered ex: Fall 2016',
+      	'type' => 'varchar',
+        'length' => 30,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+    ),
+    'primary key' => array('course_id', 'semester'),
+    'indexes' => array(
+      'semester' => array('semester'),
+    ),
+  );
+  
+  return $schema;
+}
