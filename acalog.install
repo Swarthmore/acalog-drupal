@@ -34,23 +34,65 @@ function acalog_schema() {
         'size' => 'normal',
         'unsigned' => TRUE,
         'not null' => TRUE,
-      ),
-      'program_cores' => array(
-        'description' => 'Serialized array of the program cores (as a tree) that contain course data.',
-        'type' => 'text',
+      )
+    ),
+    'primary key' => array('program_id'),
+    'indexes' => array(
+      'modified_date' => array('modified_date'),
+    ),
+  );
+
+  $schema['acalog_catalog_program_courses'] = array(
+    'description' => 'Maintains the relationship between a program and it\'s courses.',
+    'fields' => array(
+      'program_id' => array(
+        'description' => 'The Acalog id for the program.',
+        'type' => 'int',
+        'size' => 'normal',
+        'unsigned' => TRUE,
         'not null' => TRUE,
-        'serialize' => TRUE,
       ),
-      'program_courses' => array(
-        'description' => 'Serialized array of the course ids contained in the program.',
+      'course_id' => array(
+        'description' => 'The Acalog id for the course.',
+        'type' => 'int',
+        'size' => 'normal',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+    ),
+    'primary key' => array('program_id', 'course_id'),
+    'indexes' => array(
+      'semester' => array('program_id'),
+    ),
+  );
+
+  $schema['acalog_catalog_program_meta'] = array(
+    'description' => 'Contains the metadata for the program.',
+    'fields' => array(
+      'program_id' => array(
+        'description' => 'The Acalog id for the program.',
+        'type' => 'int',
+        'size' => 'normal',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'meta_name' => array(
+      	'description' => 'The name (key) of the metadata',
+      	'type' => 'varchar',
+        'length' => 30,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'meta_data' => array(
+        'description' => 'The value from acalog.',
         'type' => 'text',
         'not null' => TRUE,
         'serialize' => TRUE,
       ),
     ),
-    'primary key' => array('program_id'),
+    'primary key' => array('program_id', 'meta_name'),
     'indexes' => array(
-      'modified_date' => array('modified_date'),
+      'semester' => array('program_id'),
     ),
   );
 
@@ -78,42 +120,15 @@ function acalog_schema() {
         'unsigned' => TRUE,
         'not null' => TRUE,
       ),
-      'course_prefix' => array(
-      	'description' => 'The 4 letter course prefix',
-      	'type' => 'varchar',
-        'length' => 8,
-        'not null' => TRUE,
-        'default' => '',
-      ),
-      'course_code' => array(
-      	'description' => 'The alpha-numeric course code',
-      	'type' => 'varchar',
-        'length' => 8,
-        'not null' => TRUE,
-        'default' => '',
-      ),
-      'course_name' => array(
-      	'description' => 'The human readable course name',
-      	'type' => 'varchar',
-        'length' => 200,
-        'not null' => TRUE,
-        'default' => '',
-      ),
-      'course_data' => array(
-        'description' => 'Serialized array of all of the course data that is available.',
-        'type' => 'text',
-        'not null' => TRUE,
-        'serialize' => TRUE,
-      ),
     ),
     'primary key' => array('course_id'),
     'indexes' => array(
       'modified_date' => array('modified_date'),
     ),
   );
-  
-  $schema['acalog_catalog_course_semester'] = array(
-    'description' => 'Contains the semsters a course is offered.',
+
+  $schema['acalog_catalog_course_meta'] = array(
+    'description' => 'Contains the metadata for the course.',
     'fields' => array(
       'course_id' => array(
         'description' => 'The Acalog id for the course.',
@@ -122,19 +137,25 @@ function acalog_schema() {
         'unsigned' => TRUE,
         'not null' => TRUE,
       ),
-      'semester' => array(
-      	'description' => 'The semester offered ex: Fall 2016',
+      'meta_name' => array(
+      	'description' => 'The name (key) of the metadata',
       	'type' => 'varchar',
         'length' => 30,
         'not null' => TRUE,
         'default' => '',
       ),
+      'meta_data' => array(
+        'description' => 'The value of the acalog field.',
+        'type' => 'text',
+        'not null' => TRUE,
+        'serialize' => TRUE,
+      ),
     ),
-    'primary key' => array('course_id', 'semester'),
+    'primary key' => array('course_id', 'meta_name'),
     'indexes' => array(
-      'semester' => array('semester'),
+      'semester' => array('course_id'),
     ),
   );
-  
+
   return $schema;
 }

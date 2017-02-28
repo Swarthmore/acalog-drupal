@@ -1,6 +1,7 @@
-name = Acalog Course Catalog 
+name = Acalog Course Catalog
 description = Provides access to course data contained in an Acalog course catalog.
 core = 7.x
 package = "Acalog"
 
-
+files[] = acalog.admin.inc
+files[] = plugins/content_types/acalog_pane.inc
