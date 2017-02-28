@@ -10,6 +10,7 @@ define("ACALOG_ONLY_SHOW_ACTIVE_CATALOGS", 1);
  */
 define("ACALOG_PROGRAM_BATCH_SPLIT", 12);
 define("ACALOG_COURSE_BATCH_SPLIT", 30);
+define("ACALOG_PROGRAM_COURSE_BATCH_SPLIT", 5);
 define("ACALOG_OPERATIONS_PER_CRON", 4);
 
 /**
@@ -53,7 +54,7 @@ function acalog_menu(){
     'page arguments' => array('acalog_course_panels_pane_edit', 1),
     'access callback' => 'acalog_course_panels_pane_edit_access',
     'access arguments' => array(1),
-    'file' => 'plugins/content_types/acalog_pane.inc'
+    'file' => 'plugins/content_types/swat_acalog_pane.inc'
   );
 
   $items['courses-panel-pane/%/edit'] = array(
@@ -62,7 +63,7 @@ function acalog_menu(){
     'page arguments' => array('acalog_course_panels_pane_edit', 1),
     'access callback' => 'acalog_course_panels_pane_edit_access',
     'access arguments' => array(1),
-    'file' => 'plugins/content_types/acalog_pane.inc',
+    'file' => 'plugins/content_types/swat_acalog_pane.inc',
     'type' => MENU_DEFAULT_LOCAL_TASK,
     'context' => MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE
   );
@@ -165,7 +166,7 @@ function acalog_course_panels_pane_edit_submit($form, &$form_state){
  * Load the panels pane my pane id
  */
 function acalog_load_course_panels_pane($pid){
-  $query = db_select('panels_pane', 'pp')->fields('pp')->condition('pp.pid', $pid, "=")->condition('pp.type', 'acalog_pane', '=');
+  $query = db_select('panels_pane', 'pp')->fields('pp')->condition('pp.pid', $pid, "=")->condition('pp.type', 'swat_acalog_pane', '=');
   $result = $query->execute()->fetchObject();
   if (!is_object($result)){
     return FALSE;
@@ -194,14 +195,15 @@ function acalog_cron(){
       if (isset($operations[$current_op])){
         $func = $operations[$current_op][0];
         $args = $operations[$current_op][1];
-        call_user_func_array($func,  array_merge($args, array(&$context)));
+        call_user_func_array($func, array_merge($args, array(&$context)));
       }
     }
     if ($current_op >= count($operations)){ //we have run out of operations
       variable_set('acalog_next_cron_operation', 0);
       variable_set('acalog_last_cron_completion', date("Ymd"));
+      //if we are using varnish clear the cache (Swarthmore specific)
       if (function_exists('swat_varnish_find_panel_pane_type_refs')){
-      	swat_varnish_find_panel_pane_type_refs("acalog_pane");
+      	swat_varnish_find_panel_pane_type_refs("swat_acalog_pane");
       }
     } else {
       variable_set('acalog_next_cron_operation', $current_op + 1);
@@ -209,6 +211,14 @@ function acalog_cron(){
   }
 }
 
+/**
+ * Send an error message to Drupal watchdog and return to the error so it
+ * can be included in the batch process $context (if desired)
+ */
+function acalog_set_message($message, $variables = array(), $severity = WATCHDOG_NOTICE, $link = NULL){
+  watchdog('acalog', $message, $variables, $severity, $link);
+  return t($message, $variables);
+}
 /**
  * Helper function that defines the batch processes for both batch process and cron hooks
  */
@@ -260,7 +270,7 @@ function acalog_data_batch_refresh_finished($success, $results, $operations) {
     }
 
     if (function_exists('swat_varnish_find_panel_pane_type_refs')){
-      swat_varnish_find_panel_pane_type_refs("acalog_pane");
+      swat_varnish_find_panel_pane_type_refs("swat_acalog_pane");
     }
   }
   else {
@@ -279,14 +289,13 @@ function acalog_catalogs_variable_update(&$context) {
   $catalogs = acalog_fetch_all_catalogs();
 
   if (!count($catalogs)){
-    watchdog('acalog', 'Error refreshing active catalogs. Please check your !log_link for details.', array('!log_link' => l(t('Recent log messages'), 'admin/reports/dblog')), WATCHDOG_ERROR);
+    acalog_set_message('Error refreshing active catalogs. Please check your !log_link for details.', array('!log_link' => l(t('Recent log messages'), 'admin/reports/dblog')), WATCHDOG_ERROR);
     return FALSE;
   }
 
   variable_set('acalog_catalogs', $catalogs);
   $context['results']['acalog_catalogs'] = $catalogs;
-  $context['message'] = $context['results']['updated'][] = t("{acalog_catalogs} variable updated.");
-  watchdog('acalog', '{acalog_courses} variable updated.', array(), WATCHDOG_INFO);
+  $context['message'] = $context['results']['updated'][] = acalog_set_message('{acalog_courses} variable updated.', array(), WATCHDOG_INFO);
   return TRUE;
 }
 
@@ -297,14 +306,12 @@ function acalog_programs_variable_update(&$context) {
   $programs = acalog_fetch_all_programs();
   $active_catalog = variable_get('acalog_active_catalog', 0);
   if (empty($programs[$active_catalog])){
-    watchdog('acalog', 'Error refreshing active programs for catalog ID: @catalog_id. Please check your !log_link for details.', array('@catalog_id' => $active_catalog, '!log_link' => l(t('Recent log messages'), 'admin/reports/dblog')), WATCHDOG_ERROR);
+    acalog_set_message('Error refreshing active programs for catalog ID: @catalog_id. Please check your !log_link for details.', array('@catalog_id' => $active_catalog, '!log_link' => l(t('Recent log messages'), 'admin/reports/dblog')), WATCHDOG_ERROR);
     return FALSE;
   }
-
   variable_set('acalog_programs', $programs);
   $context['results']['acalog_programs'] = $programs;
-  $context['message'] = $context['results']['updated'][] = t("{acalog_programs} variable updated.");
-  watchdog('acalog', '{acalog_programs} variable updated. Catalog ID: @catalog_id', array('@catalog_id' => $active_catalog), WATCHDOG_INFO);
+  $context['message'] = $context['results']['updated'][] = acalog_set_message('{acalog_programs} variable updated. Catalog ID: @catalog_id', array('@catalog_id' => $active_catalog), WATCHDOG_INFO);
   return TRUE;
 }
 
@@ -313,18 +320,18 @@ function acalog_programs_variable_update(&$context) {
  */
 function acalog_program_data_update($index, &$context){
   if (!isset($context['results']['acalog_programs'])) {
-    $context['results']['acalog_programs'] = variable_get('acalog_programs', array()); //in case we want to run this outside of batch mode
+    $context['results']['acalog_programs'] = variable_get('acalog_programs', array()); //in case we want to run this outside of batch mode (cron)
   }
 
   $active_catalog = variable_get('acalog_active_catalog', 0);
   if (!$active_catalog){
-    watchdog('acalog', 'Cannot retieve active Acalog program data, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    acalog_set_message('Cannot retieve active Acalog program data, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
     return FALSE;
   }
 
   $acalog_programs = $context['results']['acalog_programs'];
   if (empty($acalog_programs[$active_catalog])){
-    watchdog('acalog', 'Cannot retieve active Acalog program data, no active program IDs found. Please check your !log_link for details. !acalog_admin_link', array('!log_link' => l(t('Recent log messages'), 'admin/reports/dblog'), '!acalog_admin_link' => l('Manually refresh catalogs and programs.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    acalog_set_message('Cannot retieve active Acalog program data, no active program IDs found. Please check your !log_link for details. !acalog_admin_link', array('!log_link' => l(t('Recent log messages'), 'admin/reports/dblog'), '!acalog_admin_link' => l('Manually refresh catalogs and programs.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
     return FALSE;
   }
 
@@ -357,12 +364,10 @@ function acalog_program_data_update($index, &$context){
   $num_per_batch = ceil($total_programs / ACALOG_PROGRAM_BATCH_SPLIT);
   $chunked = array_chunk(array_keys($acalog_programs[$active_catalog]), $num_per_batch);
   $current_chunk = (isset($chunked[$index])) ? $chunked[$index] : array();
-  $program_ids = $context['results']['acalog_programs_to_update'];
   foreach($current_chunk AS $program_id){
     //filter the current_chunk with programs that need updating
-    if (in_array($program_id, $program_ids)){
-      $status = acalog_fetch_program_data($program_id);
-      if ($status) {
+    if (in_array($program_id, $context['results']['acalog_programs_to_update'])){
+      if (acalog_fetch_program_data($program_id)) {
         $context['results']['updated'][] = t('Program %program_name updated.', array('%program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]));
         watchdog('acalog', 'Program updated. Catalog ID: @catalog_id Program ID: @program_id Program name: @program_name', array('@catalog_id' => $active_catalog, '@program_id' => $program_id, '@program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]), WATCHDOG_INFO);
       } else {
@@ -375,36 +380,11 @@ function acalog_program_data_update($index, &$context){
 }
 
 /**
- * update a single program in a batch process call (will update courses after)
- */
-function acalog_single_program_data_update($program_id, &$context){
-  $context['results']['acalog_programs'] = variable_get('acalog_programs', array());
-  $active_catalog = variable_get('acalog_active_catalog', 0);
-  $status = acalog_fetch_program_data($program_id);
-  if ($status) {
-    $context['results']['updated'][] = t('Program %program_name updated.', array('%program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]));
-    watchdog('acalog', 'Program updated. Catalog ID: @catalog_id Program ID: @program_id Program name: @program_name', array('@catalog_id' => $active_catalog, '@program_id' => $program_id, '@program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]), WATCHDOG_INFO);
-  } else {
-    watchdog('acalog', 'Program update error. Catalog ID: @catalog_id Program ID: @program_id Program name: @program_name', array('@catalog_id' => $active_catalog, '@program_id' => $program_id, '@program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]), WATCHDOG_ERROR);
-    $context['results']['update_errors'][] = t('Error updating program %program_name data with program ID: %program_id', array('%program_name', $context['results']['acalog_programs'][$active_catalog][$program_id], '%program_id' => $program_id));
-  }
-  //now we need to get the courses to update
-  $program_courses = array();
-  $query = db_select('acalog_catalog_program', 'p')->fields('p', array('program_courses'))->condition('p.program_id', $program_id, '=');
-  if ($serialized_courses = $query->execute()->fetchField()){
-    $program_courses = unserialize($serialized_courses);
-  }
-  $context['results']['all_course_ids'] = $program_courses;
-  $context['results']['courses_batch_split'] = 5;
-}
-
-/**
  * Finds all data for updated courses and stores in a database
  */
 function acalog_course_data_update($index, &$context){
   if (!isset($context['results']['all_course_ids'])) {
     $context['results']['all_course_ids'] = _acalog_get_all_course_ids();
-    dpm($context['results']['all_course_ids']);
   }
 
   if (!isset($context['results']['courses_batch_split'])) {
@@ -429,7 +409,7 @@ function acalog_course_data_update($index, &$context){
 function acalog_fetch_course_data($ids, &$context){
   $active_catalog = variable_get('acalog_active_catalog', 0);
   if (!$active_catalog){
-    watchdog('acalog', 'Cannot retieve Acalog course data, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    acalog_set_message('Cannot retieve Acalog course data, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
     return FALSE;
   }
   $path = "/v1/content";
@@ -463,6 +443,7 @@ function acalog_fetch_course_data($ids, &$context){
           $write_keys[] = 'course_id';
         }
         if (drupal_write_record('acalog_catalog_course', $record, $write_keys)){
+          $context['results']['updated'][] = acalog_set_message('Course updated. Catalog ID: @catalog_id Course ID: @course_id Course name: @course_prefix @course_code. @course_name', array('@catalog_id' => $active_catalog, '@course_id' => $record['course_id'], '@course_prefix' => $record['course_data']['Prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name']), WATCHDOG_INFO);
           //update the course metadata
           //remove any old metadata (fields not longer present or set)
           db_delete('acalog_catalog_course_meta')->condition('course_id', $record['course_id'], '=')->condition('meta_name', array_keys($meta_data), "NOT IN")->execute();
@@ -477,16 +458,11 @@ function acalog_fetch_course_data($ids, &$context){
             	      'meta_data' => $val
             	))->execute();
             if (!$mustatus){
-              watchdog('acalog', 'Course meta data update error. Catalog ID: @catalog_id Course ID: @course_id Unable to update @meta_name with value @meta_data', array('@catalog_id' => $active_catalog, '@course_id' => $record['catalog_id'], '@meta_name' => $key, '@meta_value' => $value), WATCHDOG_ERROR);
-              $context['results']['update_errors'][] = t('Course meta data update error. Catalog ID: @catalog_id Course ID: @course_id Unable to update @meta_name with value @meta_data', array('@catalog_id' => $active_catalog, '@course_id' => $record['catalog_id'], '@meta_name' => $key, '@meta_value' => $value));
+              $context['results']['update_errors'][] = acalog_set_message('Course meta data update error. Catalog ID: @catalog_id Course ID: @course_id Unable to update @meta_name with value @meta_data', array('@catalog_id' => $active_catalog, '@course_id' => $record['catalog_id'], '@meta_name' => $key, '@meta_value' => $value), WATCHDOG_ERROR);
             }
           }
-          //TODO
-          /*$context['results']['updated'][] = t("Course @course_prefix  @course_code. @course_name updated.", array('@course_prefix' => $record['course_prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name']));
-          watchdog('acalog', 'Course updated. Catalog ID: @catalog_id Course ID: @course_id Course name: @course_prefix @course_code. @course_name', array('@catalog_id' => $active_catalog, '@course_id' => $record['course_id'], '@course_prefix' => $record['course_prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name']), WATCHDOG_INFO);*/
         } else {
-          watchdog('acalog', 'Course update error. Catalog ID: @catalog_id Course ID: @course_id Course name: @course_prefix @course_code. @course_name', array('@catalog_id' => $active_catalog, '@course_id' => $record['catalog_id'], '@course_prefix' => $record['course_prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name']), WATCHDOG_ERROR);
-          $context['results']['update_errors'][] = t('Error updating course data for course ID: %course_id', array('%course_id' => $record['catalog_id']));
+          $context['results']['update_errors'][] = acalog_set_message('Course update error. Catalog ID: @catalog_id Course ID: @course_id Course name: @course_prefix @course_code. @course_name', array('@catalog_id' => $active_catalog, '@course_id' => $record['catalog_id'], '@course_prefix' => $record['course_prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name']), WATCHDOG_ERROR);
         }
       }
     }
@@ -597,7 +573,7 @@ function _acalog_get_all_course_ids(){
   $ret_val = TRUE;
   $active_catalog = variable_get('acalog_active_catalog', 0);
   if (!$active_catalog){
-    watchdog('acalog', 'Cannot retieve active Acalog program data, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    acalog_set_message('Cannot retieve active Acalog program data, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
     return FALSE;
   }
 
@@ -666,7 +642,7 @@ function acalog_fetch_all_catalogs(){
     }
   }
   if (!count($catalogs)){
-    watchdog('acalog', 'No active Acalog catalogs found using API. Endpoint URL: %api_url', array('%api_url' => $url), WATCHDOG_NOTICE);
+    acalog_set_message('No active Acalog catalogs found using API. Endpoint URL: %api_url', array('%api_url' => $url), WATCHDOG_NOTICE);
   }
   return $catalogs;
 }
@@ -678,7 +654,7 @@ function acalog_fetch_all_programs(){
   $programs = variable_get('acalog_programs', array());
   $active_catalog = variable_get('acalog_active_catalog', 0);
   if (!$active_catalog){
-    watchdog('acalog', 'Cannot retieve active Acalog programs, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
+    acalog_set_message('Cannot retieve active Acalog programs, no active catalog set. !acalog_admin_link', array('!acalog_admin_link' => l('Set the active catalog.', 'admin/config/system/acalog')), WATCHDOG_NOTICE);
     return $programs;
   }
   $path = "/v1/search/programs";
@@ -694,7 +670,7 @@ function acalog_fetch_all_programs(){
     }
   }
   if (empty($programs[$active_catalog])){
-    watchdog('acalog', 'No active Acalog programs found using API. Endpoint URL: %api_url', array('%api_url' => $url), WATCHDOG_NOTICE);
+    acalog_set_message('No active Acalog programs found using API. Endpoint URL: %api_url', array('%api_url' => $url), WATCHDOG_NOTICE);
   }
   return $programs;
 }
@@ -751,9 +727,14 @@ function acalog_fetch_program_data($program_id){
       //update the associated acalog_catalog_program_courses records
       //return all course_ids in an array
       $program_course_ids = acalog_find_all_program_course_ids($course_listings);
-      //first remove courses not present
-      if (!empty($program_course_ids)){
+
+      //remove all courses if none found
+      if (empty($program_course_ids)){
+        db_delete('acalog_catalog_program_courses')->condition('program_id', $record['program_id'], '=')->execute();
+      } else {
+        //remove any courses that are not present
         db_delete('acalog_catalog_program_courses')->condition('program_id', $record['program_id'], '=')->condition('course_id', $program_course_ids, "NOT IN")->execute();
+        //associate courses with the program_id
         foreach ($program_course_ids AS $course_id){
           $pcstatus = db_merge('acalog_catalog_program_courses')
             ->key(array('program_id' => $record['program_id'], 'course_id' => $course_id))
@@ -764,7 +745,7 @@ function acalog_fetch_program_data($program_id){
         }
       }
 
-      //remove any old metadata (fields not longer present or set)
+      //remove any old program metadata (fields not longer present or set)
       db_delete('acalog_catalog_program_meta')->condition('program_id', $record['program_id'], '=')->condition('meta_name', array_keys($meta_data), "NOT IN")->execute();
 
       //update or insert the metadata
@@ -777,8 +758,7 @@ function acalog_fetch_program_data($program_id){
                 'meta_data' => $val
           ))->execute();
         if (!$mustatus){
-          watchdog('acalog', 'Program meta data update error. Catalog ID: @catalog_id Course ID: @program_id Unable to update @meta_name with value @meta_data', array('@catalog_id' => $active_catalog, '@program_id' => $record['program_id'], '@meta_name' => $key, '@meta_value' => $value), WATCHDOG_ERROR);
-          $context['results']['update_errors'][] = t('Program meta data update error. Catalog ID: @catalog_id Course ID: @program_id Unable to update @meta_name with value @meta_data', array('@catalog_id' => $active_catalog, '@program_id' => $record['program_id'], '@meta_name' => $key, '@meta_value' => $value));
+          $context['results']['update_errors'][] = acalog_set_message('Program meta data update error. Catalog ID: @catalog_id Program ID: @program_id Unable to update @meta_name with value @meta_data', array('@catalog_id' => $active_catalog, '@program_id' => $record['program_id'], '@meta_name' => $key, '@meta_value' => $value), WATCHDOG_ERROR);
         }
       }
       return TRUE;
@@ -878,7 +858,7 @@ function _acalog_date_string_to_timestamp($string){
  */
 function _acalog_clean_field_html($raw_html){
   //remove wrapping prefix
-  $raw_html = preg_replace("/^<[^\s>]+[^>]*>(.+)<\/[^>]+>$/m", "$1", $raw_html);
+  $raw_html = preg_replace("/<\/?data[^>]*>/", "$1", $raw_html);
   //remove namespace and namespace tag prefix
   $raw_html = str_replace(array(' xmlns:h="http://www.w3.org/1999/xhtml"', '<h:', '</h:', '&lt;', '&gt;'), array('', '<', '</', '<', '>'), $raw_html);
   //transform any permalinks
@@ -898,9 +878,11 @@ function _acalog_clean_field_html($raw_html){
 function _acalog_pane_get_course_prefixes(){
   static $prefixes = array();
   if (empty($prefixes)){
-    $query = db_select('acalog_catalog_course', 'c');
+    $query = db_select('acalog_catalog_course_meta', 'cm');
     $query->distinct();
-    $query->fields('c', array('course_prefix'))->orderBy('c.course_prefix');
+    $query->fields('cm', array('meta_data'))
+      ->condition('cm.meta_name', "Prefix", '=')
+      ->orderBy('cm.meta_data');
     $prefixes = $query->execute()->fetchCol();
   }
   return $prefixes;
@@ -910,53 +892,46 @@ function _acalog_pane_get_course_prefixes(){
  * Panel pane display functions below
  */
 function acalog_query_courses_by_program_or_prefix($program_id, $group_by_semester = TRUE){
-  $prefix = $continue = FALSE;
+  $prefix = FALSE;
   if (preg_match('/^prefix:[A-Z]+$/', $program_id)){
     list($preid, $prefix) = explode(':', $program_id);
   }
   $program_courses = array();
-  if ($prefix){
-    $query = db_select('acalog_catalog_course', 'c');
-    $query->fields('c');
-    $query->condition('c.course_prefix', $prefix, '=');
-    //the following condition makes sure the courses selected are currently active (part of a program)
-    $query->condition('c.course_id', _acalog_get_all_course_ids(), 'IN');
-    $continue = TRUE;
-  } else { //return all course in a program
-    $query = db_select('acalog_catalog_program', 'p');
-    $query->fields('p', array('program_courses'));
-    $query->condition('p.program_id', $program_id, '=');
-    if ($courses = $query->execute()->fetchField()){
-      $courses = unserialize($courses);
-      $query = db_select('acalog_catalog_course', 'c');
-      $query->fields('c');
-      $query->condition('c.course_id', $courses, 'IN');
-      $continue = TRUE;
+  if ($prefix){ //query by course prefix
+    $active_catalog = variable_get('acalog_active_catalog', 0);
+    $query = db_select('acalog_catalog_course_meta', 'c');
+    $query->fields('c', array('course_id'));
+    //the following joins make sure the courses selected are currently active (part of a program and active catalog)
+    $query->join('acalog_catalog_program_courses', 'pc', 'c.course_id = pc.course_id');
+    $query->join('acalog_catalog_program', 'p', 'p.program_id = pc.program_id');
+    $query->condition('p.catalog_id', $active_catalog, '=')->condition('c.meta_name', "Prefix", '=')->condition('c.meta_data', $prefix, '=');
+  } else { //return all courses in a program
+    $query = db_select('acalog_catalog_program_courses', 'c');
+    $query->fields('c', array('course_id'));
+    $query->condition('c.program_id', $program_id, '=');
+  }
+  $query->join('acalog_catalog_course_meta', 'prefix', "prefix.course_id = c.course_id AND prefix.meta_name = 'Prefix'");
+  $query->join('acalog_catalog_course_meta', 'code', "code.course_id = c.course_id AND code.meta_name = 'Code'");
+  $query->orderBy('prefix.meta_data');
+  $query->orderBy('code.meta_data');
+  $result = $query->execute();
+
+  foreach ($result AS $row){
+    $row->course_data = db_select('acalog_catalog_course_meta', 'cm')->fields('cm', array('meta_name', 'meta_data'))->condition('cm.course_id', $row->course_id, "=")->execute()->fetchAllKeyed();
+    foreach ($row->course_data AS $key=>$data){
+      if (preg_match('/^(spring|fall|winter|summer)\s+[0-9]{4}\.?$/i', $key)){
+        $semester = strtolower(rtrim($key, '.'));
+        if ($group_by_semester){
+          $program_courses[$semester][$row->course_id] = (array)$row;
+        } else {
+          $program_courses['All Courses'][$row->course_id] = (array)$row;
+        }
+      }
     }
   }
 
-  if ($continue){
-    if ($group_by_semester){
-      $query->addField('s', 'semester');
-      $query->innerJoin('acalog_catalog_course_semester', 's', 's.course_id = c.course_id');
-      $query->orderBy('s.semester');
-    }
-    $query->orderBy('c.course_prefix');
-    $query->orderBy('c.course_code');
-
-    $result = $query->execute();
-
-    foreach ($result AS $row){
-      $row->course_data = unserialize($row->course_data);
-      if ($group_by_semester){
-        $program_courses[$row->semester][$row->course_id] = (array)$row;
-      } else {
-        $program_courses['All Courses'][$row->course_id] = (array)$row;
-      }
-    }
-    if ($group_by_semester){
-      uksort($program_courses, '_acalog_sort_semesters');
-    }
+  if ($group_by_semester){
+    uksort($program_courses, '_acalog_sort_semesters');
   }
 
   return $program_courses;
@@ -966,7 +941,7 @@ function acalog_query_courses_by_program_or_prefix($program_id, $group_by_semest
  * Implementation of hook_panels_pane_insert()
  */
 function acalog_panels_pane_insert($pane) {
-  if ($pane->type == "acalog_pane"){
+  if ($pane->type == "swat_acalog_pane"){
     $pane->configuration['acalog_pid'] = $pane->pid;
     drupal_write_record('panels_pane', $pane, array('pid')); //silly I have to do this really.
   }
@@ -1026,7 +1001,7 @@ function acalog_get_pane_links_alter(&$links, $pane, $content_type) {
  * Implementaion of hook_preprocess_panels_pane()
  */
 function acalog_preprocess_panels_pane(&$variables, $hook) {
-  if($variables['pane']->type == "acalog_pane"){
+  if($variables['pane']->type == "swat_acalog_pane"){
     //hide the title if wanted.
     if (!empty($variables['pane']->configuration['component_hide_title'])){
       $variables['title'] = '';
@@ -1058,7 +1033,7 @@ function acalog_course_url($course_id, $catalog_id = FALSE){
   if (!$catalog_id){
     $catalog_id = variable_get("acalog_active_catalog", 0);
   }
-  return url("http://catalog.swarthmore.edu/preview_course.php", array('query' => array('catoid' => $catalog_id, 'coid' => $course_id)));
+  return url(variable_get('acalog_catalog_url', "http://catalog.acalog.com") . "/preview_course.php", array('query' => array('catoid' => $catalog_id, 'coid' => $course_id)));
 }
 
 /**
@@ -1099,8 +1074,8 @@ function acalog_is_semester_expired($semester){
 }
 
 function theme_acalog_course_link($course){
-  $link_name = $course['course_prefix'] . ' ' . $course['course_code'] . '. ' . $course['course_name'];
-  $link_url = acalog_course_url($course['course_id'], $course['catalog_id']);
+  $link_name = $course['course_data']['Prefix'] . ' ' . $course['course_data']['Code'] . '. ' . $course['course_data']['Name'];
+  $link_url = acalog_course_url($course['course_id']);
   return l($link_name . ' <i class="fa fa-angle-right pull-right"></i>', $link_url, array('html' => TRUE, 'attributes' => array('target' => "_blank", 'class' => array('acalog-course-link'))));
 }
 

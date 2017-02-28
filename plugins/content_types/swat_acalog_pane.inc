@@ -70,7 +70,7 @@ function acalog_pane_edit_form($form, &$form_state) {
     );
 
     $unique_semesters = acalog_query_unique_catalog_semsters();
-   
+
     $semester_options['all'] = t("Show all courses (not listed by semester)");
     for ($i = 1; $i <= 6; $i++){
       $semester_options[$i] = $i . ' ' . format_plural( $i, 'semester', 'semesters');
@@ -135,25 +135,25 @@ function acalog_pane_edit_form_submit(&$form, &$form_state) {
       $form_state['conf'][$key] = $form_state['values'][$key];
     }
   }
-} 
+}
 
 /**
  * Run-time rendering of the body of the block (content type)
  * See ctools_plugin_examples for more advanced info
  */
 function acalog_pane_render($subtype, $conf, $args, $contexts) {
-  $pane = new stdClass();  
-  
+  $pane = new stdClass();
+
   //$pane->title = (empty($conf['component_hide_title'])) ? $conf['override_title_text'] : '<none>';
   $pane->title = '<none>';
 
   $pane->content = theme("acalog_course_listing", $conf);
-  
-  // Add contextual links for the webform node 
+
+  // Add contextual links for the webform node
   $pane->content['#contextual_links'] = array(
     'courses-panel-pane' => array('courses-panel-pane', array($conf['acalog_pid']))
   );
-    
+
   return $pane;
 }
 
@@ -161,12 +161,12 @@ function acalog_pane_render($subtype, $conf, $args, $contexts) {
  * 'admin info' callback for panel pane.
  */
 function acalog_pane_admin_info($subtype, $conf, $contexts) {
-  
+
   $active_catalog = variable_get('acalog_active_catalog', 0);
   $acalog_programs = variable_get('acalog_programs', array());
   $program = (isset($acalog_programs[$active_catalog][$conf['acalog_program']])) ? $acalog_programs[$active_catalog][$conf['acalog_program']] : t('No Program Selected');
   $pane = new stdClass();
- 
+
   $pane->title = $conf['override_title_text'];
   $pane->content = theme('item_list', array('items' => array(
       t('Program: %program', array('%program' => $program)),
@@ -175,6 +175,3 @@ function acalog_pane_admin_info($subtype, $conf, $contexts) {
 
   return $pane;
 }
-
-
-

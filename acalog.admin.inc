@@ -138,7 +138,7 @@ function acalog_program_data_batch_refresh_submit($form, $form_state){
       'error_message' => t('Program update has encountered an error.'),
     );
 
-    for ($i = 0; $i < 5; $i++){
+    for ($i = 0; $i < ACALOG_PROGRAM_COURSE_BATCH_SPLIT; $i++){
       $batch['operations'][] = array('acalog_course_data_update', array($i));
     }
 
@@ -147,10 +147,37 @@ function acalog_program_data_batch_refresh_submit($form, $form_state){
 }
 
 /**
+ * update a single program in a batch process call (will update courses later in the batch process)
+ */
+function acalog_single_program_data_update($program_id, &$context){
+  $context['results']['acalog_programs'] = variable_get('acalog_programs', array());
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  if (acalog_fetch_program_data($program_id)) {
+    $context['results']['updated'][] = acalog_set_message('Program updated. Catalog ID: @catalog_id Program ID: @program_id Program name: @program_name', array('@catalog_id' => $active_catalog, '@program_id' => $program_id, '@program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]), WATCHDOG_INFO);
+  } else {
+    $context['results']['update_errors'][] = acalog_set_message('Program update error. Catalog ID: @catalog_id Program ID: @program_id Program name: @program_name', array('@catalog_id' => $active_catalog, '@program_id' => $program_id, '@program_name' => $context['results']['acalog_programs'][$active_catalog][$program_id]), WATCHDOG_ERROR);
+  }
+
+  //now we need to get the courses to update
+  $query = db_select('acalog_catalog_program_courses', 'pc')->fields('pc', array('course_id'))->condition('pc.program_id', $program_id, '=');
+  $program_courses = $query->execute()->fetchCol();
+  dpm($program_courses);
+  $context['results']['all_course_ids'] = $program_courses;
+  $context['results']['courses_batch_split'] = ACALOG_PROGRAM_COURSE_BATCH_SPLIT;
+}
+
+/**
  * The acalog API admin settings form
  */
 function acalog_api_settings_form(){
   $form = array();
+
+  $form['acalog_catalog_url'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Acalog Catalog URL'),
+      '#default_value' => variable_get('acalog_catalog_url', "http://catalog.acalog.com"),
+      '#description' => t("Enter the URL for the public facing Acalog catalog.")
+  );
 
   $form['acalog_api_url'] = array(
       '#type' => 'textfield',
