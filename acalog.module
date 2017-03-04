@@ -1,12 +1,12 @@
 <?php
 /*
- * Change to 0 to show unpublished catalogs, requires the use of a private keyed
- * Not reccomended for production environements
+ * Change to 0 to show unpublished catalogs, requires the use of a private key
+ * Note: Not reccomended for production environments
  */
 define("ACALOG_ONLY_SHOW_ACTIVE_CATALOGS", 1);
 /*
- * Adjust the followng constants only if cron or the batch
- * process is having problems completing (timeout or memory exaustion)
+ * Adjust the followng constants only if the Acalog cron or batch
+ * process is having problems completing (timeout or memory exaustion.)
  */
 define("ACALOG_PROGRAM_BATCH_SPLIT", 12);
 define("ACALOG_COURSE_BATCH_SPLIT", 30);
@@ -21,7 +21,7 @@ function acalog_menu(){
 
   $items['admin/config/system/acalog'] = array(
     'title' => 'Acalog Course Catalog Settings',
-    'description' => 'Set acalog catalog settings.',
+    'description' => 'Set Acalog catalog settings.',
     'page callback' => 'drupal_get_form',
     'page arguments' => array('acalog_settings_form'),
     'access callback' => 'user_access',
@@ -38,7 +38,7 @@ function acalog_menu(){
 
   $items['admin/config/system/acalog/api'] = array(
     'title' => 'Acalog API Settings',
-    'description' => 'Set acalog API settings.',
+    'description' => 'Set Acalog API settings.',
     'page callback' => 'drupal_get_form',
     'page arguments' => array('acalog_api_settings_form'),
     'access callback' => 'user_access',
@@ -73,8 +73,9 @@ function acalog_menu(){
 
 /**
  * Menu permissions function for editing a course panel pane
- * For simplicity, we allow anybody that has access to edit the node
- * to edit the panel pane. Alernatively a Drupal permission can be set.
+ * For simplicity, we allow anybody that has access to the panelized node
+ * to edit the panel pane. Alernatively, an additional Drupal permission
+ * could be created.
  */
 function acalog_course_panels_pane_edit_access($pid){
   if (user_access('administer acalog catalog')){
@@ -119,7 +120,7 @@ function acalog_admin_paths_alter(&$paths){
 }
 
 /**
- *
+ * Wrapper for the panel pane edit form acalog_pane_edit_form()
  */
 function acalog_course_panels_pane_edit($form, &$form_state){
   $form = array();
@@ -139,7 +140,7 @@ function acalog_course_panels_pane_edit($form, &$form_state){
 }
 
 /**
- *
+ * Form submission handler for acalog_pane_edit_form()
  */
 function acalog_course_panels_pane_edit_submit($form, &$form_state){
   $update = array(
@@ -163,7 +164,7 @@ function acalog_course_panels_pane_edit_submit($form, &$form_state){
 }
 
 /**
- * Load the panels pane my pane id
+ * Load the panels pane by pane id (pid)
  */
 function acalog_load_course_panels_pane($pid){
   $query = db_select('panels_pane', 'pp')->fields('pp')->condition('pp.pid', $pid, "=")->condition('pp.type', 'swat_acalog_pane', '=');
@@ -212,15 +213,16 @@ function acalog_cron(){
 }
 
 /**
- * Send an error message to Drupal watchdog and return to the error so it
- * can be included in the batch process $context (if desired)
+ * Send an error message to Drupal watchdog and return the error so it
+ * can be included in the batch process message $context (if desired)
  */
 function acalog_set_message($message, $variables = array(), $severity = WATCHDOG_NOTICE, $link = NULL){
   watchdog('acalog', $message, $variables, $severity, $link);
   return t($message, $variables);
 }
+
 /**
- * Helper function that defines the batch processes for both batch process and cron hooks
+ * Helper function that defines the processes for both batch process and cron hooks
  */
 function _acalog_batch_cron_operations(){
   $operations = array(
@@ -275,7 +277,7 @@ function acalog_data_batch_refresh_finished($success, $results, $operations) {
   }
   else {
     // An error occurred.
-    // $operations contains the operations that remained unprocessed.
+    // $operations contains the unprocessed operations.
     $error_operation = reset($operations);
     $message = t('An error occurred while processing %error_operation with arguments: @arguments', array('%error_operation' => $error_operation[0], '@arguments' => print_r($error_operation[1], TRUE)));
     drupal_set_message($message, 'error');
@@ -283,7 +285,7 @@ function acalog_data_batch_refresh_finished($success, $results, $operations) {
 }
 
 /**
- * Update the acalog_catalogs varaible.
+ * Update the acalog_catalogs variable.
  */
 function acalog_catalogs_variable_update(&$context) {
   $catalogs = acalog_fetch_all_catalogs();
@@ -404,7 +406,7 @@ function acalog_course_data_update($index, &$context){
 
 
 /**
- *
+ * Calls the Acalog API to retieve course info given a list of course ids.
  */
 function acalog_fetch_course_data($ids, &$context){
   $active_catalog = variable_get('acalog_active_catalog', 0);
@@ -470,6 +472,9 @@ function acalog_fetch_course_data($ids, &$context){
   return TRUE;
 }
 
+/**
+ * Store the course field display settings from Acalog
+ */
 function acalog_course_template_update(){
   $active_catalog = variable_get('acalog_active_catalog', 0);
   if (!$active_catalog){
@@ -503,7 +508,7 @@ function acalog_course_template_update(){
           );
         }
       }
-      //Manually add the instructor note, no longer in the template... Arg!
+      //Manually add the instructor note, not in the template, only available in Drupal
       $course_template['Instructor Note'] = array(
         'show_label' => FALSE
       );
@@ -554,7 +559,7 @@ function _acalog_course_modified_time_fetch($ids){
 }
 
 /**
- * Map the field IDs to the field names=
+ * Map the field IDs to the proper (human readable) field names
  */
 function acalog_create_course_field_map($course_items_xmldom){
   $field_map = array();
@@ -567,7 +572,8 @@ function acalog_create_course_field_map($course_items_xmldom){
 }
 
 /**
- *
+ * Returns an array containing all of the course ids referenced by a program
+ * in a single catalog.
  */
 function _acalog_get_all_course_ids(){
   $ret_val = TRUE;
@@ -586,8 +592,8 @@ function _acalog_get_all_course_ids(){
 }
 
 /**
- * Do an HTTP get request to Acalog's API and return the XML DOM, return FALSE on error
- * Log the error when there is an error
+ * Do an HTTP get request to Acalog's API and return the XML DOM
+ * Returns FALSE on error
  */
 function acalog_api_request($path, $params, $xinclude = TRUE){
   //Add the API key to the query pg_parameters
@@ -619,7 +625,7 @@ function acalog_api_request($path, $params, $xinclude = TRUE){
 }
 
 /**
- * Returns all catalog names from acalog keyed by catalog id
+ * Returns all catalog names from Acalog keyed by catalog id
  */
 function acalog_fetch_all_catalogs(){
   $catalogs = array();
@@ -676,7 +682,7 @@ function acalog_fetch_all_programs(){
 }
 
 /**
- * Finds all data for a single program and stores in a database
+ * Finds all data for a single program and stores it in the database
  */
 function acalog_fetch_program_data($program_id){
   $active_catalog = variable_get('acalog_active_catalog', 0);
@@ -767,6 +773,9 @@ function acalog_fetch_program_data($program_id){
   return FALSE;
 }
 
+/**
+ * Recursive function that extracts all of the program's cores into an array.
+ */
 function acalog_fetch_program_core($core_dom, $program_dom){
   $courses = array();
   $core_id = 'core-' . preg_replace("/^.+?([0-9]+)$/", "$1", $core_dom->attributes->getNamedItem('id')->nodeValue);
@@ -829,8 +838,8 @@ function acalog_fetch_program_core($core_dom, $program_dom){
 }
 
 /**
-  * Parse all course ids out of a program's core array_tree
-  */
+ * Parse all course ids out of a program's core array
+ */
 function acalog_find_all_program_course_ids($program_array, $course_ids = array()){
   foreach ($program_array AS $key=>$data){
     if (is_array($data)){
@@ -854,7 +863,7 @@ function _acalog_date_string_to_timestamp($string){
 }
 
 /**
- * Clean up field XML(HTML)
+ * Clean up field XML(HTML) - an alternative to XSLT
  */
 function _acalog_clean_field_html($raw_html){
   //remove wrapping prefix
@@ -874,6 +883,7 @@ function _acalog_clean_field_html($raw_html){
 
 /**
  * Returns a list of all the course prefixes
+ * Note: assumes the course prefix is stored in a field titled "Prefix"
  */
 function _acalog_pane_get_course_prefixes(){
   static $prefixes = array();
@@ -943,24 +953,13 @@ function acalog_query_courses_by_program_or_prefix($program_id, $group_by_semest
 function acalog_panels_pane_insert($pane) {
   if ($pane->type == "swat_acalog_pane"){
     $pane->configuration['acalog_pid'] = $pane->pid;
-    drupal_write_record('panels_pane', $pane, array('pid')); //silly I have to do this really.
+    drupal_write_record('panels_pane', $pane, array('pid'));
   }
 }
 
 /**
- * Return the list of unique semesters available in a catalog
+ * Sorts semesters chronologically
  */
-function acalog_query_unique_catalog_semsters(){
-  $active_catalog = variable_get('acalog_active_catalog', 0);
-  $query = db_select('acalog_catalog_course_semester', 's');
-  $query->fields('s', array('semester'))->distinct();
-  $query->innerJoin('acalog_catalog_course', 'c', 'c.course_id = s.course_id');
-  $query->condition('c.catalog_id', $active_catalog, '=');
-  $semesters = $query->execute()->fetchCol();
-  usort($semesters, '_acalog_sort_semesters');
-  return $semesters;
-}
-
 function _acalog_sort_semesters($a, $b){
   $semesters = array('spring', 'summer', 'fall', 'winter');
   list($asemester, $ayear) = explode(' ', $a);
@@ -1038,6 +1037,7 @@ function acalog_course_url($course_id, $catalog_id = FALSE){
 
 /**
  * Returns the expiration date for a semester
+ * TODO: The dates & semester names should be exposed in a configuration form for easy adjustment
  */
 function acalog_semester_exipiration($semester){
   if (preg_match('/^(spring|fall|winter|summer)\s+([0-9]{4})\.?$/i', $semester, $matches)){
