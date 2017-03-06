@@ -445,7 +445,7 @@ function acalog_fetch_course_data($ids, &$context){
           $write_keys[] = 'course_id';
         }
         if (drupal_write_record('acalog_catalog_course', $record, $write_keys)){
-          $context['results']['updated'][] = acalog_set_message('Course updated. Catalog ID: @catalog_id Course ID: @course_id Course name: @course_prefix @course_code. @course_name', array('@catalog_id' => $active_catalog, '@course_id' => $record['course_id'], '@course_prefix' => $record['course_data']['Prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name']), WATCHDOG_INFO);
+          $context['results']['updated'][] = acalog_set_message('Course updated. Catalog ID: @catalog_id Course ID: @course_id Course name: @course_prefix @course_code. @course_name', array('@catalog_id' => $active_catalog, '@course_id' => $record['course_id'], '@course_prefix' => $meta_data['Prefix'] , '@course_code' => $meta_data['Code'] , '@course_name' => $meta_data['Name']), WATCHDOG_INFO);
           //update the course metadata
           //remove any old metadata (fields not longer present or set)
           db_delete('acalog_catalog_course_meta')->condition('course_id', $record['course_id'], '=')->condition('meta_name', array_keys($meta_data), "NOT IN")->execute();
@@ -464,7 +464,7 @@ function acalog_fetch_course_data($ids, &$context){
             }
           }
         } else {
-          $context['results']['update_errors'][] = acalog_set_message('Course update error. Catalog ID: @catalog_id Course ID: @course_id Course name: @course_prefix @course_code. @course_name', array('@catalog_id' => $active_catalog, '@course_id' => $record['catalog_id'], '@course_prefix' => $record['course_prefix'] , '@course_code' => $record['course_code'] , '@course_name' => $record['course_name']), WATCHDOG_ERROR);
+          $context['results']['update_errors'][] = acalog_set_message('Course update error. Catalog ID: @catalog_id Course ID: @course_id Course name: @course_prefix @course_code. @course_name', array('@catalog_id' => $active_catalog, '@course_id' => $record['catalog_id'], '@course_prefix' => $meta_data['Prefix'] , '@course_code' => $meta_data['Code'] , '@course_name' => $meta_data['Name']), WATCHDOG_ERROR);
         }
       }
     }
