@@ -306,6 +306,7 @@ function acalog_catalogs_variable_update(&$context) {
  */
 function acalog_programs_variable_update(&$context) {
   $programs = acalog_fetch_all_programs();
+
   $active_catalog = variable_get('acalog_active_catalog', 0);
   if (empty($programs[$active_catalog])){
     acalog_set_message('Error refreshing active programs for catalog ID: @catalog_id. Please check your !log_link for details.', array('@catalog_id' => $active_catalog, '!log_link' => l(t('Recent log messages'), 'admin/reports/dblog')), WATCHDOG_ERROR);
@@ -939,12 +940,34 @@ function acalog_query_courses_by_program_or_prefix($program_id, $group_by_semest
       }
     }
   }
-
+  
   if ($group_by_semester){
     uksort($program_courses, '_acalog_sort_semesters');
   }
 
   return $program_courses;
+}
+
+/**
+ * Return the list of unique semesters available in a catalog
+ * Sorts semesters chronologically
+ */
+function acalog_query_unique_catalog_semsters(){
+  $active_catalog = variable_get('acalog_active_catalog', 0);
+  $query = db_select('acalog_catalog_course_meta', 's');
+  $query->fields('s', array('meta_name'))->distinct();
+  $query->join('acalog_catalog_program_courses', 'pc', 'pc.course_id = s.course_id');
+  $query->join('acalog_catalog_program', 'p', 'p.program_id = pc.program_id');
+  $query->condition('p.catalog_id', $active_catalog, '=');
+  $query->condition('s.meta_name', '(spring|fall|winter|summer) +([0-9]{4})\.?', 'REGEXP');
+  $semesters_raw = $query->execute()->fetchCol();
+  $semesters = array();
+  foreach ($semesters_raw AS $semester){
+    $semesters[] = strtolower(preg_replace('/(spring|fall|winter|summer) +([0-9]{4})\.?/i', "$1 $2", $semester));
+  }
+  usort($semesters, '_acalog_sort_semesters');
+
+  return $semesters;
 }
 
 /**
@@ -1039,7 +1062,7 @@ function acalog_course_url($course_id, $catalog_id = FALSE){
  * Returns the expiration date for a semester
  * TODO: The dates & semester names should be exposed in a configuration form for easy adjustment
  */
-function acalog_semester_exipiration($semester){
+function acalog_semester_expiration($semester){
   if (preg_match('/^(spring|fall|winter|summer)\s+([0-9]{4})\.?$/i', $semester, $matches)){
     $term = $matches[1];
     $year = (int)$matches[2];
@@ -1070,7 +1093,7 @@ function acalog_semester_exipiration($semester){
  * returns true if a semester is expired, false otherwise
  */
 function acalog_is_semester_expired($semester){
-  return (time() > acalog_semester_exipiration($semester));
+  return (time() > acalog_semester_expiration($semester));
 }
 
 function theme_acalog_course_link($course){
@@ -1097,6 +1120,7 @@ function theme_acalog_course_listing($conf){
   $num_sems = ($show_all) ? 1 : $conf['acalog_num_semesters'];
 
   $all_courses = acalog_query_courses_by_program_or_prefix($conf['acalog_program'], !$show_all);
+
   if (!count($all_courses)){
     return "";
   }
