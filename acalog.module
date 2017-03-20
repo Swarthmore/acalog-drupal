@@ -68,6 +68,14 @@ function acalog_menu(){
     'context' => MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE
   );
 
+  $items['courses-csv'] = array(
+    'title' => 'Export Acalog Course Data to CSV',
+    'page callback' => 'acalog_course_csv_export',
+    'page arguments' => array(),
+    'access callback' => 'user_access',
+    'access arguments' => array('administer acalog catalog'),
+    'file' => 'acalog_catalog_csv_export.inc'
+  );
   return $items;
 }
 
@@ -940,7 +948,7 @@ function acalog_query_courses_by_program_or_prefix($program_id, $group_by_semest
       }
     }
   }
-  
+
   if ($group_by_semester){
     uksort($program_courses, '_acalog_sort_semesters');
   }
